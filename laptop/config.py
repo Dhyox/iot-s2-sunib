@@ -27,8 +27,9 @@ MATCH_THRESHOLD = 0.363
 # UID yang belum terdaftar akan muncul di log dashboard sebagai "Tidak dikenal",
 # salin UID-nya ke sini lalu restart app.
 RFID_CARDS = {
-    "A1B2C3D4": "Miyano",
+    "BFADA3D0": "Miyano",
     "FFFD9ED0": "DhyoxB",
+    "10942060": "MasterCard",
 }
 
 # --- Database & dashboard ---
