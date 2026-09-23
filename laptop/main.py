@@ -12,15 +12,21 @@ Jalankan: python main.py
 import logging
 import threading
 import time
+from collections import Counter, defaultdict
 
-import cv2
 import serial
 from flask import Flask, jsonify, render_template, request
 
 import database as db
-from config import (BAUD_RATE, CAMERA_INDEX, DASHBOARD_HOST, DASHBOARD_PORT,
-                    RFID_CARDS, SCAN_WINDOW_SEC, SERIAL_PORT)
-from face_engine import FaceEngine
+import config
+from config import (BAUD_RATE, DASHBOARD_HOST, DASHBOARD_PORT, RFID_CARDS,
+                    SCAN_WINDOW_SEC, SERIAL_PORT)
+from face_engine import FaceEngine, open_camera
+
+# Voting multi-frame (bisa ditimpa dari config.py)
+VOTE_FRAMES = getattr(config, "VOTE_FRAMES", 5)          # frame berkualitas yang dinilai
+VOTES_NEEDED = getattr(config, "VOTES_NEEDED", 3)        # minimal frame yang sepakat
+FRAME_INTERVAL_SEC = getattr(config, "FRAME_INTERVAL_SEC", 0.15)  # jeda antar frame dinilai
 
 
 class GateBridge:
@@ -28,7 +34,7 @@ class GateBridge:
         self.engine = FaceEngine()
         if not self.engine.known:
             print("PERINGATAN: belum ada wajah terdaftar. Jalankan enroll.py dulu.")
-        self.cap = cv2.VideoCapture(CAMERA_INDEX)
+        self.cap = open_camera()
         self.ser = None
         self.write_lock = threading.Lock()
         self.connected = False
@@ -113,38 +119,78 @@ class GateBridge:
         self.scan_thread.start()
 
     def _face_scan(self):
+        """
+        Voting multi-frame: nilai hingga VOTE_FRAMES frame berkualitas bagus.
+        Gate dibuka hanya kalau minimal VOTES_NEEDED frame sepakat pada orang yang sama.
+        """
         if not self.cap.isOpened():
-            self.cap.open(CAMERA_INDEX)
+            self.cap = open_camera()
         for _ in range(5):          # buang frame lama di buffer webcam
             self.cap.read()
 
         deadline = time.time() + SCAN_WINDOW_SEC
-        saw_face, best_unknown = False, 0.0
-        while time.time() < deadline:
+        votes, vote_scores = Counter(), defaultdict(list)
+        outcomes = Counter()
+        judged, last_judged = 0, 0.0
+        skipped = Counter()         # alasan frame dilewati (kualitas)
+        closest_name, closest_score = None, 0.0
+
+        while time.time() < deadline and judged < VOTE_FRAMES:
             if self.cancel_scan.is_set():
                 print("  (scan wajah dihentikan, akses sudah selesai)")
                 return
             ok, frame = self.cap.read()
-            if not ok:
+            if not ok or time.time() - last_judged < FRAME_INTERVAL_SEC:
                 continue
-            status, name, score = self.engine.identify(frame)
-            if status == "match":
-                self.send(f"FACE,OK,{name}")
-                db.log_access("face", "granted", identity=name,
-                              score=round(score, 3))
-                return
-            if status == "unknown":
-                saw_face = True
-                best_unknown = max(best_unknown, score)
+
+            r = self.engine.identify(frame)
+            if r.status in ("no_face", "low_quality"):
+                if r.status == "low_quality":   # wajah ada tapi tidak layak
+                    skipped[r.reason.split(" (")[0]] += 1
+                continue
+
+            last_judged = time.time()
+            judged += 1
+            outcomes[r.status] += 1
+            second = f", ke-2 {r.second_name} {r.second_score:.2f}" if r.second_name else ""
+            print(f"  frame {judged}: {r.status:<9} {r.name} {r.score:.2f}{second}")
+            if r.score > closest_score:
+                closest_name, closest_score = r.name, r.score
+
+            if r.status == "match":
+                votes[r.name] += 1
+                vote_scores[r.name].append(r.score)
+                if votes[r.name] >= VOTES_NEEDED:
+                    break
+            leader = max(votes.values(), default=0)
+            if leader + (VOTE_FRAMES - judged) < VOTES_NEEDED:
+                break               # sudah tidak mungkin mencapai VOTES_NEEDED
 
         if self.cancel_scan.is_set():
             return
+
+        winner, n = votes.most_common(1)[0] if votes else (None, 0)
+        if winner and n >= VOTES_NEEDED:
+            score = sum(vote_scores[winner]) / n
+            self.send(f"FACE,OK,{winner}")
+            db.log_access("face", "granted", identity=winner, score=round(score, 3),
+                          note=f"{n}/{judged} frame sepakat")
+            return
+
         self.send("FACE,FAIL")
-        if saw_face:
-            db.log_access("face", "denied", score=round(best_unknown, 3),
-                          note="wajah tidak dikenal")
+        if judged == 0:
+            reason = skipped.most_common(1)[0][0] if skipped else "tidak ada wajah terdeteksi"
+            note = f"tidak ada frame layak: {reason}"
+        elif outcomes["ambiguous"] and outcomes["ambiguous"] >= outcomes["unknown"]:
+            note = "ragu: skor mirip beberapa orang"
+        elif outcomes["unknown"]:
+            note = "wajah tidak dikenal"
         else:
-            db.log_access("face", "denied", note="tidak ada wajah terdeteksi")
+            note = "frame tidak sepakat"
+        if closest_name and judged:
+            note += f" (terdekat {closest_name}, {votes[closest_name]}/{judged} frame)"
+        db.log_access("face", "denied",
+                      score=round(closest_score, 3) if judged else None, note=note)
 
     # ---------- dari dashboard ----------
     def manual_open(self):
