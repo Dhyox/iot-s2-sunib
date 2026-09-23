@@ -32,6 +32,8 @@ class GateBridge:
         self.ser = None
         self.write_lock = threading.Lock()
         self.connected = False
+        self.cancel_scan = threading.Event()
+        self.scan_thread = None
 
     # ---------- koneksi serial ----------
     def _open_serial(self):
@@ -81,10 +83,13 @@ class GateBridge:
         if line == "READY":
             return
         if line == "SCAN":
-            self._face_scan()
+            self._start_face_scan()
+        elif line == "CANCEL":
+            self.cancel_scan.set()
         elif line.startswith("RFID,"):
             self._check_card(line.split(",", 1)[1].strip().upper())
         elif line == "DOOR,OPEN":
+            self.cancel_scan.set()   # gate sudah terbuka (kartu/dashboard), hentikan scan wajah
             db.log_door("open")
         elif line == "DOOR,CLOSED":
             db.log_door("closed")
@@ -92,11 +97,20 @@ class GateBridge:
     def _check_card(self, uid):
         name = RFID_CARDS.get(uid)
         if name:
-            self.send(f"OK,{name}")
+            self.send(f"RFID,OK,{name}")
             db.log_access("rfid", "granted", identity=name, uid=uid)
         else:
-            self.send("FAIL")
+            self.send("RFID,FAIL")
             db.log_access("rfid", "denied", uid=uid, note="kartu tidak terdaftar")
+
+    def _start_face_scan(self):
+        # Face scan jalan di thread sendiri, supaya RFID tetap dijawab saat scan
+        if self.scan_thread and self.scan_thread.is_alive():
+            self.cancel_scan.set()
+            self.scan_thread.join(timeout=2)
+        self.cancel_scan.clear()
+        self.scan_thread = threading.Thread(target=self._face_scan, daemon=True)
+        self.scan_thread.start()
 
     def _face_scan(self):
         if not self.cap.isOpened():
@@ -107,12 +121,15 @@ class GateBridge:
         deadline = time.time() + SCAN_WINDOW_SEC
         saw_face, best_unknown = False, 0.0
         while time.time() < deadline:
+            if self.cancel_scan.is_set():
+                print("  (scan wajah dihentikan, akses sudah selesai)")
+                return
             ok, frame = self.cap.read()
             if not ok:
                 continue
             status, name, score = self.engine.identify(frame)
             if status == "match":
-                self.send(f"OK,{name}")
+                self.send(f"FACE,OK,{name}")
                 db.log_access("face", "granted", identity=name,
                               score=round(score, 3))
                 return
@@ -120,7 +137,9 @@ class GateBridge:
                 saw_face = True
                 best_unknown = max(best_unknown, score)
 
-        self.send("FAIL")
+        if self.cancel_scan.is_set():
+            return
+        self.send("FACE,FAIL")
         if saw_face:
             db.log_access("face", "denied", score=round(best_unknown, 3),
                           note="wajah tidak dikenal")
