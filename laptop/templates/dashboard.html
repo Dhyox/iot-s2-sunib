@@ -1,0 +1,306 @@
+<!doctype html>
+<html lang="id">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Smart Gate</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Barlow:wght@400;500;600&family=Barlow+Condensed:wght@500;600&display=swap" rel="stylesheet">
+<script src="{{ url_for('static', filename='chart.umd.min.js') }}"></script>
+<style>
+  :root {
+    --paper: #EDF0F2;
+    --panel: #F8F9FA;
+    --ink: #1C2A36;
+    --muted: #5B6B78;
+    --line: #CBD3D9;
+    --granted: #1E8C4E;
+    --denied: #C23A2B;
+    --manual: #2C6FB7;
+    --display: "Barlow Condensed", "Arial Narrow", sans-serif;
+    --body: "Barlow", "Segoe UI", system-ui, sans-serif;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--paper); color: var(--ink);
+    font: 16px/1.5 var(--body);
+  }
+  header {
+    display: flex; align-items: center; justify-content: space-between;
+    gap: 16px; padding: 18px 28px; border-bottom: 1px solid var(--line);
+  }
+  header h1 { margin: 0; font: 600 26px/1 var(--display); letter-spacing: .01em; }
+  .conn { display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 15px; }
+  .dot { width: 10px; height: 10px; border-radius: 50%; background: var(--denied); }
+  .conn.ok .dot { background: var(--granted); }
+
+  main {
+    display: grid; grid-template-columns: 340px 1fr; gap: 28px;
+    padding: 28px; max-width: 1320px; margin: 0 auto;
+  }
+  @media (max-width: 900px) { main { grid-template-columns: 1fr; padding: 18px; } }
+
+  .gate {
+    background: var(--panel); border: 1px solid var(--line); border-radius: 14px;
+    padding: 24px; align-self: start; position: sticky; top: 20px;
+  }
+  .gate svg { width: 100%; height: auto; display: block; }
+  #arm { transform-origin: 46px 72px; transition: transform .9s cubic-bezier(.3,.7,.3,1); }
+  .gate.open #arm { transform: rotate(-78deg); }
+  @media (prefers-reduced-motion: reduce) { #arm { transition: none; } }
+  .gate-state { margin: 18px 0 0; font: 600 52px/1 var(--display); }
+  .gate.open .gate-state { color: var(--granted); }
+  .gate-since { margin: 6px 0 22px; color: var(--muted); }
+  button {
+    width: 100%; padding: 12px 16px; border: 0; border-radius: 8px;
+    background: var(--ink); color: #fff; font: 500 16px var(--body); cursor: pointer;
+  }
+  button:hover { background: #2E4150; }
+  button:focus-visible { outline: 3px solid var(--manual); outline-offset: 2px; }
+  button:disabled { background: var(--line); color: var(--muted); cursor: not-allowed; }
+  .hint { margin: 10px 0 0; font-size: 14px; color: var(--muted); }
+  .error { color: var(--denied); }
+
+  .today {
+    display: grid; grid-template-columns: repeat(4, 1fr);
+    border-top: 3px solid var(--ink); border-bottom: 1px solid var(--line);
+  }
+  .today div { padding: 14px 16px 16px 0; }
+  .today b {
+    display: block; font: 600 44px/1 var(--display);
+    font-variant-numeric: tabular-nums;
+  }
+  .today span { color: var(--muted); font-size: 14px; }
+  .today .g b { color: var(--granted); }
+  .today .d b { color: var(--denied); }
+  @media (max-width: 600px) { .today { grid-template-columns: repeat(2, 1fr); } }
+
+  section h2 { font: 600 22px/1.2 var(--display); margin: 32px 0 12px; }
+  .chart-box { position: relative; height: 260px; }
+  .pair { display: grid; grid-template-columns: 1fr 1.4fr; gap: 28px; }
+  .pair .chart-box { height: 220px; }
+  @media (max-width: 700px) { .pair { grid-template-columns: 1fr; } }
+
+  .table-wrap { overflow-x: auto; }
+  table { width: 100%; border-collapse: collapse; font-size: 15px; }
+  th {
+    text-align: left; font-weight: 500; color: var(--muted);
+    padding: 8px 12px 8px 0; border-bottom: 1px solid var(--ink);
+  }
+  td { padding: 10px 12px 10px 0; border-bottom: 1px solid var(--line); white-space: nowrap; }
+  td.time { font-variant-numeric: tabular-nums; }
+  .res { font-weight: 600; }
+  .res.granted { color: var(--granted); }
+  .res.denied { color: var(--denied); }
+  .detail { color: var(--muted); }
+  .empty { color: var(--muted); padding: 18px 0; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Smart Gate</h1>
+  <div class="conn" id="conn"><span class="dot"></span><span id="connText">Menghubungkan…</span></div>
+</header>
+
+<main>
+  <aside class="gate" id="gate">
+    <svg viewBox="0 -125 300 285" role="img" aria-label="Palang gate">
+      <rect x="0" y="150" width="300" height="4" fill="#CBD3D9"/>
+      <g id="arm">
+        <rect x="46" y="64" width="190" height="16" rx="3" fill="#FFFFFF" stroke="#1C2A36" stroke-width="1.5"/>
+        <rect x="76"  y="65" width="26" height="14" fill="#C23A2B"/>
+        <rect x="128" y="65" width="26" height="14" fill="#C23A2B"/>
+        <rect x="180" y="65" width="26" height="14" fill="#C23A2B"/>
+        <rect x="222" y="65" width="13" height="14" fill="#C23A2B"/>
+      </g>
+      <rect x="30" y="56" width="32" height="94" rx="4" fill="#1C2A36"/>
+      <circle cx="46" cy="72" r="5" fill="#EDF0F2"/>
+    </svg>
+    <p class="gate-state" id="gateState">Terkunci</p>
+    <p class="gate-since" id="gateSince">Menunggu data…</p>
+    <button id="unlockBtn" type="button">Buka gate</button>
+    <p class="hint" id="unlockHint">Gate menutup otomatis setelah 5 detik.</p>
+  </aside>
+
+  <section>
+    <div class="today">
+      <div><b id="tTotal">0</b><span>Percobaan hari ini</span></div>
+      <div class="g"><b id="tGranted">0</b><span>Diterima</span></div>
+      <div class="d"><b id="tDenied">0</b><span>Ditolak</span></div>
+      <div><b id="tPeople">0</b><span>Orang masuk</span></div>
+    </div>
+
+    <h2>Akses per hari, 14 hari terakhir</h2>
+    <div class="chart-box"><canvas id="dailyChart" aria-label="Grafik akses per hari"></canvas></div>
+
+    <div class="pair">
+      <div>
+        <h2>Metode akses</h2>
+        <div class="chart-box"><canvas id="methodChart" aria-label="Grafik metode akses"></canvas></div>
+      </div>
+      <div>
+        <h2>Jam paling ramai</h2>
+        <div class="chart-box"><canvas id="hourChart" aria-label="Grafik akses per jam"></canvas></div>
+      </div>
+    </div>
+
+    <h2>Log akses</h2>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Waktu</th><th>Metode</th><th>Identitas</th><th>Hasil</th><th>Detail</th></tr></thead>
+        <tbody id="logBody"><tr><td colspan="5" class="empty">Belum ada akses tercatat. Tempelkan kartu atau berdiri di depan sensor.</td></tr></tbody>
+      </table>
+    </div>
+  </section>
+</main>
+
+<script>
+const C = { granted: "#1E8C4E", denied: "#C23A2B", ink: "#1C2A36", muted: "#5B6B78", line: "#CBD3D9" };
+const METHOD_LABEL = { face: "Wajah", rfid: "Kartu RFID", manual: "Dashboard" };
+const $ = id => document.getElementById(id);
+
+const fmtDay = iso => new Date(iso + "T00:00:00")
+  .toLocaleDateString("id-ID", { day: "numeric", month: "short" });
+const fmtTime = ts => {
+  const [d, t] = ts.split(" ");
+  const today = new Date().toISOString().slice(0, 10);
+  return d === today ? t : `${fmtDay(d)} ${t.slice(0, 5)}`;
+};
+
+let charts = null;
+function makeCharts() {
+  if (!window.Chart) return null;
+  Chart.defaults.font.family = '"Barlow", system-ui, sans-serif';
+  Chart.defaults.color = C.muted;
+  const grid = { color: C.line }, noGrid = { display: false };
+  return {
+    daily: new Chart($("dailyChart"), {
+      type: "bar",
+      data: { labels: [], datasets: [
+        { label: "Diterima", data: [], backgroundColor: C.granted },
+        { label: "Ditolak", data: [], backgroundColor: C.denied } ] },
+      options: { maintainAspectRatio: false, animation: false,
+        scales: { x: { stacked: true, grid: noGrid },
+                  y: { stacked: true, beginAtZero: true, ticks: { precision: 0 }, grid } },
+        plugins: { legend: { position: "bottom", align: "start" } } }
+    }),
+    method: new Chart($("methodChart"), {
+      type: "bar",
+      data: { labels: [], datasets: [
+        { label: "Diterima", data: [], backgroundColor: C.granted },
+        { label: "Ditolak", data: [], backgroundColor: C.denied } ] },
+      options: { indexAxis: "y", maintainAspectRatio: false, animation: false,
+        scales: { x: { stacked: true, beginAtZero: true, ticks: { precision: 0 }, grid },
+                  y: { stacked: true, grid: noGrid } },
+        plugins: { legend: { display: false } } }
+    }),
+    hour: new Chart($("hourChart"), {
+      type: "bar",
+      data: { labels: [...Array(24).keys()].map(h => String(h).padStart(2, "0")),
+              datasets: [{ label: "Akses diterima", data: [], backgroundColor: C.ink }] },
+      options: { maintainAspectRatio: false, animation: false,
+        scales: { x: { grid: noGrid }, y: { beginAtZero: true, ticks: { precision: 0 }, grid } },
+        plugins: { legend: { display: false } } }
+    })
+  };
+}
+
+function renderStatus(s) {
+  const conn = $("conn");
+  conn.classList.toggle("ok", s.esp32_connected);
+  $("connText").textContent = s.esp32_connected ? "ESP32 terhubung" : "ESP32 tidak terhubung";
+  $("unlockBtn").disabled = !s.esp32_connected;
+
+  const open = s.door.state === "open";
+  $("gate").classList.toggle("open", open);
+  $("gateState").textContent = open ? "Terbuka" : "Terkunci";
+  $("gateSince").textContent = s.door.ts ? `Sejak ${fmtTime(s.door.ts)}` : "Belum ada perubahan status";
+
+  $("tTotal").textContent = s.today.total;
+  $("tGranted").textContent = s.today.granted;
+  $("tDenied").textContent = s.today.denied;
+  $("tPeople").textContent = s.today.people;
+}
+
+function renderLogs(rows) {
+  const body = $("logBody");
+  if (!rows.length) return;
+  body.innerHTML = "";
+  for (const r of rows) {
+    const tr = document.createElement("tr");
+    const detail = [
+      r.score != null ? `skor ${r.score.toFixed(2)}` : null,
+      r.uid ? `UID ${r.uid}` : null,
+      r.note
+    ].filter(Boolean).join(", ");
+    const cells = [
+      [fmtTime(r.ts), "time"],
+      [METHOD_LABEL[r.method] || r.method, ""],
+      [r.identity || "Tidak dikenal", ""],
+      [r.result === "granted" ? "Diterima" : "Ditolak", `res ${r.result}`],
+      [detail, "detail"]
+    ];
+    for (const [text, cls] of cells) {
+      const td = document.createElement("td");
+      td.textContent = text;
+      if (cls) td.className = cls;
+      tr.appendChild(td);
+    }
+    body.appendChild(tr);
+  }
+}
+
+function renderStats(st) {
+  if (!charts) return;
+  charts.daily.data.labels = st.daily.map(d => fmtDay(d.day));
+  charts.daily.data.datasets[0].data = st.daily.map(d => d.granted);
+  charts.daily.data.datasets[1].data = st.daily.map(d => d.denied);
+  charts.daily.update();
+
+  const methods = ["face", "rfid", "manual"];
+  charts.method.data.labels = methods.map(m => METHOD_LABEL[m]);
+  charts.method.data.datasets[0].data = methods.map(m => st.methods[m]?.granted || 0);
+  charts.method.data.datasets[1].data = methods.map(m => st.methods[m]?.denied || 0);
+  charts.method.update();
+
+  charts.hour.data.datasets[0].data = st.hourly;
+  charts.hour.update();
+}
+
+async function refresh() {
+  try {
+    const [s, logs, st] = await Promise.all([
+      fetch("/api/status").then(r => r.json()),
+      fetch("/api/logs?limit=50").then(r => r.json()),
+      fetch("/api/stats?days=14").then(r => r.json())
+    ]);
+    renderStatus(s);
+    renderLogs(logs);
+    renderStats(st);
+  } catch (e) {
+    $("connText").textContent = "Server dashboard tidak merespons";
+    $("conn").classList.remove("ok");
+  }
+}
+
+$("unlockBtn").addEventListener("click", async () => {
+  const btn = $("unlockBtn"), hint = $("unlockHint");
+  btn.disabled = true;
+  const res = await fetch("/api/unlock", { method: "POST" }).then(r => r.json()).catch(() => ({ ok: false }));
+  hint.classList.toggle("error", !res.ok);
+  hint.textContent = res.ok ? "Gate dibuka. Menutup otomatis setelah 5 detik."
+                            : (res.error || "Gagal membuka gate.") + " Cek kabel USB ESP32.";
+  refresh();
+});
+
+charts = makeCharts();
+if (!charts) {
+  document.querySelectorAll(".chart-box").forEach(b =>
+    b.innerHTML = '<p class="empty">File static/chart.umd.min.js tidak ditemukan.</p>');
+}
+refresh();
+setInterval(refresh, 2000);
+</script>
+</body>
+</html>
