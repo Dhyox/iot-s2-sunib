@@ -6,10 +6,22 @@
  *   - MFRC522      (by GithubCommunity / miguelbalboa)
  *   - ESP32Servo   (by Kevin Harrington)
  *
+ * Alur (sesi proximity):
+ *   IDLE : hanya cek sensor jarak.
+ *   SESI : orang terdeteksi <= TRIGGER_DISTANCE_CM -> LED biru, kamera laptop
+ *          DAN RFID aktif bersamaan. Mana yang berhasil duluan, gate terbuka.
+ *          - wajah gagal -> alarm 3x + merah sebentar, kartu masih bisa dipakai
+ *          - kartu salah -> bip pendek + merah sebentar, sesi lanjut
+ *          - sesi habis tanpa berhasil -> bip panjang, sesi selesai
+ *   Setelah sesi selesai, orang harus menjauh dulu sebelum sesi baru.
+ *
  * Protokol serial 115200 baud, satu baris per pesan:
- *   ESP32 -> laptop : READY | SCAN | RFID,<uid> | DOOR,OPEN | DOOR,CLOSED
+ *   ESP32 -> laptop : READY | SCAN | CANCEL | RFID,<uid> | DOOR,OPEN | DOOR,CLOSED
  *                     baris diawali '#' = pesan debug
- *   laptop -> ESP32 : OK,<nama> | FAIL | OPEN (buka manual dari dashboard)
+ *   laptop -> ESP32 : FACE,OK,<nama> | FACE,FAIL | RFID,OK,<nama> | RFID,FAIL | OPEN
+ *
+ * Tes tanpa laptop (Serial Monitor 115200, line ending "Newline"):
+ *   ketik OPEN, atau dekatkan tangan ke sensor lalu ketik FACE,OK,Tes
  */
 
 #include <SPI.h>
@@ -30,18 +42,19 @@
 // ---------- Pengaturan ----------
 const bool LED_COMMON_ANODE    = false;  // true kalau LED RGB common anode
 const bool BUZZER_PASSIVE      = false;  // true kalau buzzer pasif (butuh tone)
-const int  TRIGGER_DISTANCE_CM = 30;     // jarak untuk aktifkan kamera
+const int  TRIGGER_DISTANCE_CM = 30;     // jarak untuk memulai sesi
 const int  NEAR_READINGS_NEEDED = 3;     // pembacaan dekat berturut-turut
 const int  SERVO_CLOSED_DEG    = 0;
 const int  SERVO_OPEN_DEG      = 90;
-const unsigned long FACE_TIMEOUT_MS   = 10000; // tunggu hasil face recog
+const unsigned long SESSION_MS        = 12000; // waktu untuk wajah ATAU kartu
 const unsigned long RFID_TIMEOUT_MS   = 1500;  // tunggu jawaban laptop untuk RFID
+const unsigned long RED_FLASH_MS      = 800;   // lama LED merah saat gagal
 const unsigned long DOOR_OPEN_MS      = 5000;  // lama gate terbuka
 const unsigned long COOLDOWN_MS       = 4000;  // jeda sebelum scan berikutnya
 const unsigned long DISTANCE_EVERY_MS = 100;
 
 // Kartu cadangan: dipakai HANYA kalau laptop tidak menjawab (misal laptop mati).
-// Isi dengan UID kartumu (lihat log dashboard), huruf besar tanpa spasi.
+// UID kartumu muncul di Serial Monitor sebagai "# kartu terbaca: XXXXXXXX".
 const char* LOCAL_CARDS[] = { "A1B2C3D4" };
 const int LOCAL_CARD_COUNT = sizeof(LOCAL_CARDS) / sizeof(LOCAL_CARDS[0]);
 
@@ -49,12 +62,17 @@ const int LOCAL_CARD_COUNT = sizeof(LOCAL_CARDS) / sizeof(LOCAL_CARDS[0]);
 MFRC522 rfid(RC522_SS, RC522_RST);
 Servo gateServo;
 
-enum State { IDLE, WAIT_FACE, WAIT_RFID, DOOR_OPEN, COOLDOWN };
+enum State { IDLE, ACTIVE, DOOR_OPEN, COOLDOWN };
 State state = IDLE;
 
 unsigned long stateStart = 0;
 unsigned long lastDistanceCheck = 0;
+unsigned long flashUntil = 0;
+unsigned long rfidSentAt = 0;
 int nearCount = 0;
+int clearCount = 0;
+bool waitingClear = false;   // tunggu orang menjauh sebelum sesi baru
+bool rfidPending = false;    // sedang menunggu jawaban laptop untuk kartu
 String pendingUid = "";
 String serialBuf = "";
 
@@ -90,7 +108,18 @@ void changeState(State s) {
 }
 
 // ---------- Aksi gate ----------
+void startSession() {
+  rfidPending = false;
+  flashUntil = 0;
+  setLed(false, false, true);            // biru = sesi aktif
+  Serial.println("SCAN");
+  Serial.println("# sesi dimulai: hadapkan wajah atau tempel kartu");
+  changeState(ACTIVE);
+}
+
 void grantAccess() {
+  Serial.println("CANCEL");              // sesi selesai, laptop boleh berhenti scan
+  rfidPending = false;
   setLed(false, true, false);            // hijau
   gateServo.write(SERVO_OPEN_DEG);
   Serial.println("DOOR,OPEN");
@@ -102,16 +131,33 @@ void closeDoor() {
   setLed(false, false, false);
   Serial.println("DOOR,CLOSED");
   nearCount = 0;
+  waitingClear = true;
   changeState(COOLDOWN);
 }
 
-void denyAccess(bool faceFailure) {
+void faceFailed() {                      // sesi tetap lanjut, kartu masih bisa
+  Serial.println("# wajah tidak dikenali, kartu masih bisa dipakai");
   setLed(true, false, false);            // merah
-  if (faceFailure) beepPattern(3, 300, 150);  // alarm gagal face recognition
-  else             beepPattern(1, 150, 0);    // kartu tidak dikenal
-  delay(700);
+  beepPattern(3, 300, 150);              // alarm gagal face recognition
+  flashUntil = millis() + RED_FLASH_MS;
+}
+
+void cardRejected() {                    // sesi tetap lanjut
+  Serial.println("# kartu ditolak");
+  setLed(true, false, false);            // merah
+  beepPattern(1, 150, 0);
+  flashUntil = millis() + RED_FLASH_MS;
+}
+
+void sessionTimeout() {
+  Serial.println("CANCEL");
+  Serial.println("# waktu sesi habis");
+  setLed(true, false, false);            // merah
+  buzz(600);
+  delay(400);
   setLed(false, false, false);
   nearCount = 0;
+  waitingClear = true;
   changeState(COOLDOWN);
 }
 
@@ -152,11 +198,17 @@ void handleLine(String line) {
   line.trim();
   if (line.length() == 0) return;
 
-  if (line.startsWith("OK")) {
-    if (state == WAIT_FACE || state == WAIT_RFID) grantAccess();
-  } else if (line == "FAIL") {
-    if (state == WAIT_FACE)      denyAccess(true);
-    else if (state == WAIT_RFID) denyAccess(false);
+  if (line.startsWith("FACE,OK")) {
+    if (state == ACTIVE) grantAccess();
+  } else if (line == "FACE,FAIL") {
+    if (state == ACTIVE) faceFailed();
+  } else if (line.startsWith("RFID,OK")) {
+    if (state == ACTIVE && rfidPending) grantAccess();
+  } else if (line == "RFID,FAIL") {
+    if (state == ACTIVE && rfidPending) {
+      rfidPending = false;
+      cardRejected();
+    }
   } else if (line == "OPEN") {
     if (state != DOOR_OPEN) grantAccess();
   }
@@ -189,6 +241,14 @@ void setup() {
 
   SPI.begin();               // VSPI default: SCK 18, MISO 19, MOSI 23
   rfid.PCD_Init();
+  delay(50);
+  byte ver = rfid.PCD_ReadRegister(MFRC522::VersionReg);
+  if (ver == 0x00 || ver == 0xFF) {
+    Serial.println("# RC522 TIDAK terdeteksi! Cek kabel SPI, RST, dan 3.3V");
+  } else {
+    Serial.print("# RC522 OK, versi 0x");
+    Serial.println(ver, HEX);
+  }
 
   gateServo.setPeriodHertz(50);
   gateServo.attach(SERVO_PIN, 500, 2400);
@@ -205,48 +265,60 @@ void loop() {
 
   switch (state) {
     case IDLE: {
-      // 1) RFID
-      String uid = readCardUid();
-      if (uid.length() > 0) {
-        pendingUid = uid;
-        setLed(false, false, true);      // biru = memproses
-        Serial.println("RFID," + uid);
-        changeState(WAIT_RFID);
+      // Hanya cek jarak. RFID & kamera aktif setelah sesi dimulai.
+      if (now - lastDistanceCheck < DISTANCE_EVERY_MS) break;
+      lastDistanceCheck = now;
+
+      long d = readDistanceCm();
+      bool isNear = d > 0 && d <= TRIGGER_DISTANCE_CM;
+
+      if (waitingClear) {                // orang sebelumnya belum menjauh
+        clearCount = isNear ? 0 : clearCount + 1;
+        if (clearCount >= 3) {
+          waitingClear = false;
+          clearCount = 0;
+        }
         break;
       }
 
-      // 2) Proximity -> aktifkan face recognition
-      if (now - lastDistanceCheck >= DISTANCE_EVERY_MS) {
-        lastDistanceCheck = now;
-        long d = readDistanceCm();
-        if (d > 0 && d <= TRIGGER_DISTANCE_CM) nearCount++;
-        else nearCount = 0;
-
-        if (nearCount >= NEAR_READINGS_NEEDED) {
-          nearCount = 0;
-          setLed(false, false, true);    // biru = scanning wajah
-          Serial.println("SCAN");
-          changeState(WAIT_FACE);
-        }
+      nearCount = isNear ? nearCount + 1 : 0;
+      if (nearCount >= NEAR_READINGS_NEEDED) {
+        nearCount = 0;
+        startSession();
       }
       break;
     }
 
-    case WAIT_FACE:
-      if (now - stateStart > FACE_TIMEOUT_MS) {
-        Serial.println("# face timeout, laptop tidak menjawab");
-        denyAccess(true);
+    case ACTIVE: {
+      // LED kembali biru setelah kedipan merah
+      if (flashUntil != 0 && now > flashUntil) {
+        flashUntil = 0;
+        setLed(false, false, true);
       }
-      break;
 
-    case WAIT_RFID:
-      if (now - stateStart > RFID_TIMEOUT_MS) {
+      if (!rfidPending) {
+        String uid = readCardUid();
+        if (uid.length() > 0) {
+          pendingUid = uid;
+          rfidPending = true;
+          rfidSentAt = now;
+          Serial.println("RFID," + uid);
+          Serial.println("# kartu terbaca: " + uid);
+        }
+      } else if (now - rfidSentAt > RFID_TIMEOUT_MS) {
         // Laptop tidak menjawab -> pakai daftar kartu lokal
+        rfidPending = false;
         Serial.println("# laptop tidak menjawab, cek kartu lokal");
-        if (isLocalCard(pendingUid)) grantAccess();
-        else denyAccess(false);
+        if (isLocalCard(pendingUid)) {
+          grantAccess();
+          break;
+        }
+        cardRejected();
       }
+
+      if (state == ACTIVE && now - stateStart > SESSION_MS) sessionTimeout();
       break;
+    }
 
     case DOOR_OPEN:
       if (now - stateStart > DOOR_OPEN_MS) closeDoor();
