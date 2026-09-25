@@ -230,7 +230,7 @@ function renderLogs(rows) {
   for (const r of rows) {
     const tr = document.createElement("tr");
     const detail = [
-      r.score != null ? `skor ${r.score.toFixed(2)}` : null,
+      r.score != null ? `skor ${r.score.toFixed(1)}` : null,
       r.uid ? `UID ${r.uid}` : null,
       r.note
     ].filter(Boolean).join(", ");

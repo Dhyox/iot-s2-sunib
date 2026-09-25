@@ -1,38 +1,42 @@
-# """Pengaturan utama. Ubah bagian ini sesuai laptopmu."""
+# setting utama, sesuaiin sama laptop masing2
+import json
 from pathlib import Path
 
 BASE_DIR = Path(__file__).resolve().parent
 
-# --- Serial ke ESP32 ---
-# Windows: "COM3", "COM5", ...   Linux: "/dev/ttyUSB0"   macOS: "/dev/cu.usbserial-xxxx"
-# Cek port dengan: python -m serial.tools.list_ports
+# serial ESP32
+# cek port: python -m serial.tools.list_ports  (windows COMx, linux /dev/ttyUSB0)
 SERIAL_PORT = "COM8"
 BAUD_RATE = 115200
 
-# --- Webcam ---
-CAMERA_INDEX = 0          # 0 = webcam bawaan laptop, 1 = webcam eksternal
-SCAN_WINDOW_SEC = 5.0     # lama mencoba mengenali wajah setelah SCAN
-                          # (harus < FACE_TIMEOUT_MS di ESP32, yaitu 10 detik)
+# webcam
+CAMERA_INDEX = 0          # 0 = webcam laptop, 1 = webcam external
+SCAN_WINDOW_SEC = 5.0     # jangan lebih dari SESSION_MS di ESP32 (12 detik)
 
-# --- Face recognition (OpenCV YuNet + SFace) ---
-MODEL_DIR = BASE_DIR / "models"
-DETECTOR_MODEL = MODEL_DIR / "face_detection_yunet_2023mar.onnx"
-RECOGNIZER_MODEL = MODEL_DIR / "face_recognition_sface_2021dec.onnx"
-EMBEDDINGS_FILE = BASE_DIR / "embeddings.pkl"
-# Cosine similarity minimum agar dianggap cocok.
-# 0.363 = nilai rekomendasi OpenCV. Naikkan (mis. 0.45) kalau sering salah kenal.
-MATCH_THRESHOLD = 0.363
+# face recognition
+HAAR_CASCADE = BASE_DIR / "models" / "haarcascade_frontalface_default.xml"
+FACE_DATA_DIR = BASE_DIR / "data"
+LBPH_MODEL_FILE = BASE_DIR / "trainer.yml"
+LBPH_LABELS_FILE = BASE_DIR / "labels.json"
+# makin kecil makin ketat. turunin kalo orang lain ikut kebuka
+LBPH_THRESHOLD = 70
 
-# --- RFID: UID kartu -> nama pemilik ---
-# UID yang belum terdaftar akan muncul di log dashboard sebagai "Tidak dikenal",
-# salin UID-nya ke sini lalu restart app.
-RFID_CARDS = {
-    "BFADA3D0": "Miyano",
-    "FFFD9ED0": "DhyoxB",
-    "10942060": "MasterCard",
-}
+# kartu RFID ada di rfid_cards.json (ga di-commit soalnya repo publik)
+# copy dari rfid_cards.example.json terus isi UID kartunya
+RFID_CARDS_FILE = BASE_DIR / "rfid_cards.json"
 
-# --- Database & dashboard ---
+
+def _load_rfid_cards():
+    if not RFID_CARDS_FILE.exists():
+        print(f"PERINGATAN: {RFID_CARDS_FILE.name} tidak ada, semua kartu akan ditolak.")
+        return {}
+    with open(RFID_CARDS_FILE, encoding="utf-8") as f:
+        return {uid.upper(): name for uid, name in json.load(f).items()}
+
+
+RFID_CARDS = _load_rfid_cards()
+
+# database & dashboard
 DB_FILE = BASE_DIR / "gate.db"
-DASHBOARD_HOST = "0.0.0.0"   # 0.0.0.0 = bisa dibuka dari HP di WiFi yang sama
+DASHBOARD_HOST = "0.0.0.0"   # biar bisa dibuka dari HP (1 wifi)
 DASHBOARD_PORT = 5000

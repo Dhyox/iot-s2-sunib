@@ -56,3 +56,16 @@ $RECYCLE.BIN/
 
 # Built Visual Studio Code Extensions
 *.vsix
+
+### Python
+__pycache__/
+*.pyc
+laptop/eval_data/
+laptop/eval_report.png
+
+### Data lokal gate (repo publik: jangan di-commit)
+laptop/data/
+laptop/trainer.yml
+laptop/labels.json
+laptop/gate.db
+laptop/rfid_cards.json

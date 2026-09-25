@@ -1,14 +1,5 @@
-"""
-Smart Gate - aplikasi laptop.
-
-Satu program menjalankan dua hal sekaligus:
-  1. Bridge serial ke ESP32 (thread terpisah): menjawab SCAN dengan face
-     recognition, mengecek UID RFID, dan mencatat semuanya ke database.
-  2. Server HTTP (Flask) untuk dashboard di http://localhost:5000
-
-Jalankan: python main.py
-(Tutup Serial Monitor Arduino IDE dulu, port COM tidak bisa dipakai bersamaan.)
-"""
+# program utama: serial ke ESP32 + dashboard flask (localhost:5000)
+# NOTE: tutup serial monitor arduino dulu, kalo ga port COM-nya kepake
 import logging
 import threading
 import time
@@ -23,10 +14,10 @@ from config import (BAUD_RATE, DASHBOARD_HOST, DASHBOARD_PORT, RFID_CARDS,
                     SCAN_WINDOW_SEC, SERIAL_PORT)
 from face_engine import FaceEngine, open_camera
 
-# Voting multi-frame (bisa ditimpa dari config.py)
-VOTE_FRAMES = getattr(config, "VOTE_FRAMES", 5)          # frame berkualitas yang dinilai
-VOTES_NEEDED = getattr(config, "VOTES_NEEDED", 3)        # minimal frame yang sepakat
-FRAME_INTERVAL_SEC = getattr(config, "FRAME_INTERVAL_SEC", 0.15)  # jeda antar frame dinilai
+# gate kebuka kalo minimal 3 dari 5 frame nebak orang yg sama
+VOTE_FRAMES = getattr(config, "VOTE_FRAMES", 5)
+VOTES_NEEDED = getattr(config, "VOTES_NEEDED", 3)
+FRAME_INTERVAL_SEC = getattr(config, "FRAME_INTERVAL_SEC", 0.15)
 
 
 class GateBridge:
@@ -41,13 +32,12 @@ class GateBridge:
         self.cancel_scan = threading.Event()
         self.scan_thread = None
 
-    # ---------- koneksi serial ----------
     def _open_serial(self):
         s = serial.Serial()
         s.port = SERIAL_PORT
         s.baudrate = BAUD_RATE
         s.timeout = 0.2
-        s.dtr = False   # cegah ESP32 ter-reset saat port dibuka
+        s.dtr = False   # kalo ga di-set, ESP32 ke-reset tiap port dibuka
         s.rts = False
         s.open()
         return s
@@ -59,10 +49,20 @@ class GateBridge:
                 self.connected = True
                 print(f"Terhubung ke ESP32 di {SERIAL_PORT}")
                 self._read_loop()
-            except serial.SerialException as e:
+            except (serial.SerialException, OSError) as e:
                 self.connected = False
                 print(f"Serial error: {e}. Mencoba lagi dalam 3 detik...")
+                self._close_serial()   # port lama harus ditutup, kalo ga COM-nya ke-lock
                 time.sleep(3)
+
+    def _close_serial(self):
+        with self.write_lock:
+            if self.ser:
+                try:
+                    self.ser.close()
+                except Exception:
+                    pass
+            self.ser = None
 
     def _read_loop(self):
         while True:
@@ -75,11 +75,17 @@ class GateBridge:
 
     def send(self, msg):
         with self.write_lock:
-            if self.ser and self.ser.is_open:
+            if not (self.ser and self.ser.is_open):
+                print(f"  gagal kirim {msg}: ESP32 ga konek")
+                return False
+            try:
                 self.ser.write((msg + "\n").encode())
-                print(f"  -> {msg}")
+            except (serial.SerialException, OSError) as e:
+                print(f"  gagal kirim {msg}: {e}")
+                return False
+        print(f"  -> {msg}")
+        return True
 
-    # ---------- pesan dari ESP32 ----------
     def _handle(self, line):
         if line.startswith("#"):
             print(f"[ESP32] {line[1:].strip()}")
@@ -95,7 +101,7 @@ class GateBridge:
         elif line.startswith("RFID,"):
             self._check_card(line.split(",", 1)[1].strip().upper())
         elif line == "DOOR,OPEN":
-            self.cancel_scan.set()   # gate sudah terbuka (kartu/dashboard), hentikan scan wajah
+            self.cancel_scan.set()   # udh kebuka (kartu/dashboard), stop scan
             db.log_door("open")
         elif line == "DOOR,CLOSED":
             db.log_door("closed")
@@ -110,7 +116,7 @@ class GateBridge:
             db.log_access("rfid", "denied", uid=uid, note="kartu tidak terdaftar")
 
     def _start_face_scan(self):
-        # Face scan jalan di thread sendiri, supaya RFID tetap dijawab saat scan
+        # thread sendiri biar RFID tetep bisa dijawab pas lagi scan
         if self.scan_thread and self.scan_thread.is_alive():
             self.cancel_scan.set()
             self.scan_thread.join(timeout=2)
@@ -119,21 +125,16 @@ class GateBridge:
         self.scan_thread.start()
 
     def _face_scan(self):
-        """
-        Voting multi-frame: nilai hingga VOTE_FRAMES frame berkualitas bagus.
-        Gate dibuka hanya kalau minimal VOTES_NEEDED frame sepakat pada orang yang sama.
-        """
         if not self.cap.isOpened():
             self.cap = open_camera()
-        for _ in range(5):          # buang frame lama di buffer webcam
+        for _ in range(5):          # buang frame lama di buffer
             self.cap.read()
 
         deadline = time.time() + SCAN_WINDOW_SEC
         votes, vote_scores = Counter(), defaultdict(list)
         outcomes = Counter()
         judged, last_judged = 0, 0.0
-        skipped = Counter()         # alasan frame dilewati (kualitas)
-        closest_name, closest_score = None, 0.0
+        closest_name, closest_score = None, None
 
         while time.time() < deadline and judged < VOTE_FRAMES:
             if self.cancel_scan.is_set():
@@ -144,17 +145,14 @@ class GateBridge:
                 continue
 
             r = self.engine.identify(frame)
-            if r.status in ("no_face", "low_quality"):
-                if r.status == "low_quality":   # wajah ada tapi tidak layak
-                    skipped[r.reason.split(" (")[0]] += 1
+            if r.status == "no_face":
                 continue
 
             last_judged = time.time()
             judged += 1
             outcomes[r.status] += 1
-            second = f", ke-2 {r.second_name} {r.second_score:.2f}" if r.second_name else ""
-            print(f"  frame {judged}: {r.status:<9} {r.name} {r.score:.2f}{second}")
-            if r.score > closest_score:
+            print(f"  frame {judged}: {r.status:<7} {r.name} {r.score:.1f}")
+            if r.name and (closest_score is None or r.score > closest_score):
                 closest_name, closest_score = r.name, r.score
 
             if r.status == "match":
@@ -164,7 +162,7 @@ class GateBridge:
                     break
             leader = max(votes.values(), default=0)
             if leader + (VOTE_FRAMES - judged) < VOTES_NEEDED:
-                break               # sudah tidak mungkin mencapai VOTES_NEEDED
+                break               # udh ga mungkin menang, gausah lanjut
 
         if self.cancel_scan.is_set():
             return
@@ -173,33 +171,32 @@ class GateBridge:
         if winner and n >= VOTES_NEEDED:
             score = sum(vote_scores[winner]) / n
             self.send(f"FACE,OK,{winner}")
-            db.log_access("face", "granted", identity=winner, score=round(score, 3),
+            db.log_access("face", "granted", identity=winner, score=round(score, 1),
                           note=f"{n}/{judged} frame sepakat")
             return
 
         self.send("FACE,FAIL")
         if judged == 0:
-            reason = skipped.most_common(1)[0][0] if skipped else "tidak ada wajah terdeteksi"
-            note = f"tidak ada frame layak: {reason}"
-        elif outcomes["ambiguous"] and outcomes["ambiguous"] >= outcomes["unknown"]:
-            note = "ragu: skor mirip beberapa orang"
+            note = "tidak ada wajah terdeteksi"
         elif outcomes["unknown"]:
             note = "wajah tidak dikenal"
         else:
             note = "frame tidak sepakat"
-        if closest_name and judged:
+        if closest_name:
             note += f" (terdekat {closest_name}, {votes[closest_name]}/{judged} frame)"
         db.log_access("face", "denied",
-                      score=round(closest_score, 3) if judged else None, note=note)
+                      score=round(closest_score, 1) if closest_score is not None else None,
+                      note=note)
 
-    # ---------- dari dashboard ----------
     def manual_open(self):
-        self.send("OPEN")
+        if not self.send("OPEN"):
+            return False
         db.log_access("manual", "granted", identity="Dashboard",
                       note="dibuka dari dashboard")
+        return True
 
 
-# ================= HTTP / dashboard =================
+# dashboard
 app = Flask(__name__)
 bridge: GateBridge = None
 
@@ -234,7 +231,8 @@ def api_stats():
 def api_unlock():
     if not bridge.connected:
         return jsonify(ok=False, error="ESP32 tidak terhubung"), 503
-    bridge.manual_open()
+    if not bridge.manual_open():
+        return jsonify(ok=False, error="Gagal kirim ke ESP32"), 503
     return jsonify(ok=True)
 
 
@@ -244,7 +242,7 @@ def main():
     bridge = GateBridge()
     threading.Thread(target=bridge.run, daemon=True).start()
 
-    logging.getLogger("werkzeug").setLevel(logging.WARNING)  # sembunyikan log polling
+    logging.getLogger("werkzeug").setLevel(logging.WARNING)  # biar terminal ga spam log polling
     print(f"Dashboard: http://localhost:{DASHBOARD_PORT}")
     app.run(host=DASHBOARD_HOST, port=DASHBOARD_PORT,
             debug=False, use_reloader=False, threaded=True)
