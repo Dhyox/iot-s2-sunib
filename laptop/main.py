@@ -49,10 +49,20 @@ class GateBridge:
                 self.connected = True
                 print(f"Terhubung ke ESP32 di {SERIAL_PORT}")
                 self._read_loop()
-            except serial.SerialException as e:
+            except (serial.SerialException, OSError) as e:
                 self.connected = False
                 print(f"Serial error: {e}. Mencoba lagi dalam 3 detik...")
+                self._close_serial()   # port lama harus ditutup, kalo ga COM-nya ke-lock
                 time.sleep(3)
+
+    def _close_serial(self):
+        with self.write_lock:
+            if self.ser:
+                try:
+                    self.ser.close()
+                except Exception:
+                    pass
+            self.ser = None
 
     def _read_loop(self):
         while True:
@@ -65,9 +75,16 @@ class GateBridge:
 
     def send(self, msg):
         with self.write_lock:
-            if self.ser and self.ser.is_open:
+            if not (self.ser and self.ser.is_open):
+                print(f"  gagal kirim {msg}: ESP32 ga konek")
+                return False
+            try:
                 self.ser.write((msg + "\n").encode())
-                print(f"  -> {msg}")
+            except (serial.SerialException, OSError) as e:
+                print(f"  gagal kirim {msg}: {e}")
+                return False
+        print(f"  -> {msg}")
+        return True
 
     def _handle(self, line):
         if line.startswith("#"):
@@ -172,9 +189,11 @@ class GateBridge:
                       note=note)
 
     def manual_open(self):
-        self.send("OPEN")
+        if not self.send("OPEN"):
+            return False
         db.log_access("manual", "granted", identity="Dashboard",
                       note="dibuka dari dashboard")
+        return True
 
 
 # dashboard
@@ -212,7 +231,8 @@ def api_stats():
 def api_unlock():
     if not bridge.connected:
         return jsonify(ok=False, error="ESP32 tidak terhubung"), 503
-    bridge.manual_open()
+    if not bridge.manual_open():
+        return jsonify(ok=False, error="Gagal kirim ke ESP32"), 503
     return jsonify(ok=True)
 
 
