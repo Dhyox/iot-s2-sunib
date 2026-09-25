@@ -13,7 +13,7 @@
 #define TRIG_PIN    26
 #define ECHO_PIN    27
 #define SERVO_PIN   13
-#define BUZZER_PIN  21   // dulu pin LED biru
+#define BUZZER_PIN  21
 #define LED_R       32
 #define LED_G       33
 
