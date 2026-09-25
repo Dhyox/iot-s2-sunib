@@ -25,8 +25,9 @@ const int  SERVO_CLOSED_DEG    = 0;
 const int  SERVO_OPEN_DEG      = 90;
 const unsigned long SESSION_MS        = 12000;
 const unsigned long RFID_TIMEOUT_MS   = 1500;  // nunggu jawaban laptop
+const unsigned long FAIL_GRACE_MS     = 2000;  // abis wajah gagal, sisa waktu buat tap kartu
 const unsigned long DOOR_OPEN_MS      = 5000;
-const unsigned long COOLDOWN_MS       = 4000;
+const unsigned long COOLDOWN_MS       = 1000;
 const unsigned long DISTANCE_EVERY_MS = 100;
 
 // cadangan kalo laptop mati / ga jawab
@@ -41,11 +42,12 @@ enum State { IDLE, ACTIVE, DOOR_OPEN, COOLDOWN };
 State state = IDLE;
 
 unsigned long stateStart = 0;
+unsigned long sessionMs = SESSION_MS;
 unsigned long lastDistanceCheck = 0;
 unsigned long rfidSentAt = 0;
 int nearCount = 0;
 int clearCount = 0;
-bool waitingClear = false;   // orangnya harus pergi dulu baru bisa sesi baru
+bool waitingClear = false;   // abis gate kebuka, orangnya harus lewat/pergi dulu baru bisa sesi baru
 bool rfidPending = false;
 String pendingUid = "";
 String serialBuf = "";
@@ -86,6 +88,7 @@ void changeState(State s) {
 
 void startSession() {
   rfidPending = false;
+  sessionMs = SESSION_MS;
   setLed(true, false);                   // merah = nunggu wajah / kartu
   Serial.println("SCAN");
   Serial.println("# sesi dimulai: hadapkan wajah atau tempel kartu");
@@ -114,6 +117,9 @@ void closeDoor() {
 void faceFailed() {
   Serial.println("# wajah tidak dikenali, kartu masih bisa dipakai");
   blinkRed(3, 300, 150, 3);
+  // gausah nunggu full 12 detik, kasih waktu dikit buat kartu aja
+  unsigned long elapsed = millis() - stateStart;
+  if (elapsed + FAIL_GRACE_MS < sessionMs) sessionMs = elapsed + FAIL_GRACE_MS;
 }
 
 void cardRejected() {
@@ -128,7 +134,7 @@ void sessionTimeout() {
   delay(400);
   setLed(false, false);
   nearCount = 0;
-  waitingClear = true;
+  waitingClear = false;   // gagal, orangnya boleh langsung coba lagi ga usah pergi dulu
   changeState(COOLDOWN);
 }
 
@@ -278,7 +284,8 @@ void loop() {
         cardRejected();
       }
 
-      if (state == ACTIVE && now - stateStart > SESSION_MS) sessionTimeout();
+      // jangan timeout kalo kartu lagi dicek laptop
+      if (state == ACTIVE && !rfidPending && now - stateStart > sessionMs) sessionTimeout();
       break;
     }
 

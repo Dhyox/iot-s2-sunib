@@ -31,12 +31,13 @@ File yang dibuat saat dipakai (tidak di-commit): `rfid_cards.json` (kartu RFID),
 3. Selama sesi, **wajah dan kartu aktif bersamaan**. Mana yang berhasil duluan, gate terbuka.
    - Wajah: laptop menilai hingga 5 frame berisi wajah, gate dibuka kalau minimal 3 frame
      sepakat pada orang yang sama (jarak LBPH < `LBPH_THRESHOLD`).
-     Gagal → **merah kedip 3x** + bunyi 3x, kartu masih bisa dipakai.
+     Gagal → **merah kedip 3x** + bunyi 3x, lalu masih ada 2 detik untuk tempel kartu.
    - Kartu: UID dicek laptop ke `RFID_CARDS`. Kalau laptop tidak menjawab dalam 1,5 detik,
      ESP32 memakai daftar cadangan `LOCAL_CARDS`. Kartu salah → **merah kedip 3x** + bip pendek, sesi lanjut.
-   - Sesi habis tanpa berhasil → bip panjang, LED mati.
-4. Akses diterima → **LED hijau nyala**, servo terbuka 5 detik, lalu tertutup (LED mati) + jeda 4 detik.
-   Orang harus menjauh dulu sebelum sesi baru.
+   - Sesi habis tanpa berhasil → bip panjang, LED mati, jeda 1 detik. Kalau orangnya masih
+     di depan sensor, sesi baru langsung mulai lagi.
+4. Akses diterima → **LED hijau nyala**, servo terbuka 5 detik, lalu tertutup (LED mati) + jeda 1 detik.
+   Orang harus lewat/menjauh dulu sebelum sesi baru.
 
 ## Wiring
 
