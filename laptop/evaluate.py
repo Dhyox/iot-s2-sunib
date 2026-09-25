@@ -1,23 +1,10 @@
-"""
-Evaluasi akurasi & kalibrasi LBPH_THRESHOLD.
-
-1) Kumpulkan data uji. Lakukan di SESI BERBEDA dari enroll (jam/hari lain),
-   supaya hasilnya jujur:
-     python evaluate.py collect Carlson     # orang yang terdaftar
-     python evaluate.py collect tamu1       # orang yang TIDAK terdaftar (uji false accept)
-   Tiap orang ~40 foto wajah, tersimpan di folder eval_data/.
-
-2) Buat laporan:
-     python evaluate.py report
-   -> ringkasan di terminal + grafik eval_report.png
-
-Istilah:
-  jarak    = jarak LBPH ke orang paling mirip (0 = sama persis, makin kecil makin mirip)
-  FAR      = False Accept Rate, frame yang membuat gate menerima orang yang salah
-             (orang asing, atau orang terdaftar dikenali sebagai orang lain)
-  FRR      = False Reject Rate, frame orang terdaftar yang tidak dikenali sebagai dirinya
-  EER      = titik saat FAR = FRR
-"""
+# buat ngetes akurasi + nyari LBPH_THRESHOLD yg pas (buat laporan juga)
+#   python evaluate.py collect Carlson   (yg udh di-enroll)
+#   python evaluate.py collect tamu1     (orang luar, buat cek false accept)
+#   python evaluate.py report
+# collect-nya jangan barengan sama enroll, beda hari/jam biar hasilnya jujur
+#
+# FAR = gate kebuka buat orang yg salah, FRR = orangnya bener tapi ditolak
 import argparse
 from collections import Counter, defaultdict
 
@@ -31,7 +18,6 @@ from face_engine import FaceEngine
 EVAL_DIR = BASE_DIR / "eval_data"
 
 
-# ---------------- collect ----------------
 def collect(name, n):
     faces = capture(name, n, interval=0.25, title="Kumpulkan data uji")
     if len(faces) < n:
@@ -41,12 +27,11 @@ def collect(name, n):
     print(f"Tersimpan: eval_data/{name}.npy")
 
 
-# ---------------- report ----------------
 def load_probes():
     probes = {}
     for f in (sorted(EVAL_DIR.glob("*.npy")) if EVAL_DIR.exists() else []):
         data = np.load(f)
-        if data.ndim != 3 or data.shape[1:] != fe.FACE_SIZE[::-1]:
+        if data.ndim != 3 or data.shape[1:] != fe.FACE_SIZE[::-1]:   # file versi SFace dulu
             print(f"Lewati {f.name}: format lama/tidak cocok, kumpulkan ulang.")
             continue
         probes[f.stem] = data
@@ -93,7 +78,6 @@ def report():
         print(f"Jarak saat tebakan SALAH : n={(~correct).sum()}, rata-rata {dist[~correct].mean():.1f}, "
               f"terdekat {dist[~correct].min():.1f}")
 
-    # --- sweep threshold ---
     ts = np.arange(0, 150.5, 0.5)
     curve = np.array([rates(dist, correct, enrolled, t) for t in ts])
     far, frr = curve[:, 0], curve[:, 1]
@@ -104,7 +88,7 @@ def report():
     for target in (0.01, 0.001):
         idx = np.where(far <= target)[0]
         if len(idx):
-            t = ts[idx[-1]]       # threshold terbesar yang FAR-nya masih di bawah target
+            t = ts[idx[-1]]       # ambil yg paling longgar tapi FAR masih aman
             rec[target] = t
             print(f"Threshold untuk FAR ≤ {target:.1%}: {t:.1f}  "
                   f"(FRR {rates(dist, correct, enrolled, t)[1]:.1%})")
@@ -112,7 +96,6 @@ def report():
     print(f"Threshold sekarang {fe.LBPH_THRESHOLD}: FAR {cur_far:.1%}, FRR {cur_frr:.1%}"
           "  (per frame, sebelum voting)")
 
-    # --- tabel keputusan ---
     confusion = defaultdict(Counter)
     for t, p, d in zip(true_names, pred_names, dist):
         confusion[t][p if d < fe.LBPH_THRESHOLD else "(ditolak)"] += 1

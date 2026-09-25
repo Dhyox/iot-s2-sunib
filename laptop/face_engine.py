@@ -1,13 +1,5 @@
-"""
-Deteksi & pengenalan wajah dengan Haar cascade + LBPH (OpenCV contrib).
-
-Alur per frame:
-  Haar cascade (deteksi) -> ambil wajah terbesar -> grayscale 200x200
-  -> LBPH predict -> jarak < LBPH_THRESHOLD = cocok
-
-Butuh paket opencv-contrib-python (untuk cv2.face).
-Data wajah & model dibuat oleh: python enroll.py <nama>
-"""
+# face recognition pake haar cascade + LBPH
+# butuh opencv-contrib-python (cv2.face ga ada di opencv-python biasa)
 import json
 import os
 from dataclasses import dataclass
@@ -25,19 +17,19 @@ CAMERA_HEIGHT = getattr(config, "CAMERA_HEIGHT", 720)
 
 @dataclass
 class Result:
-    status: str               # no_face | unknown | match
-    name: str = None          # kandidat terbaik
-    score: float = 0.0        # 100 - jarak LBPH (makin tinggi makin mirip)
+    status: str               # no_face / unknown / match
+    name: str = None
+    score: float = 0.0        # 100 - jarak
     reason: str = ""
 
 
 def open_camera(index=None):
-    """Buka webcam dengan resolusi lebih tinggi (default OpenCV sering 640x480)."""
     index = CAMERA_INDEX if index is None else index
     if os.name == "nt":
-        cap = cv2.VideoCapture(index, cv2.CAP_DSHOW)   # lebih cepat di Windows
+        cap = cv2.VideoCapture(index, cv2.CAP_DSHOW)   # di windows lebih cepet kebuka
     else:
         cap = cv2.VideoCapture(index)
+    # default opencv cuma 640x480
     cap.set(cv2.CAP_PROP_FRAME_WIDTH, CAMERA_WIDTH)
     cap.set(cv2.CAP_PROP_FRAME_HEIGHT, CAMERA_HEIGHT)
     return cap
@@ -45,7 +37,7 @@ def open_camera(index=None):
 
 def load_detector():
     path = config.HAAR_CASCADE
-    if not path.exists():   # cadangan: file bawaan OpenCV
+    if not path.exists():   # pake yg bawaan opencv aja
         path = cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
     detector = cv2.CascadeClassifier(str(path))
     if detector.empty():
@@ -78,7 +70,7 @@ class FaceEngine:
     def __init__(self):
         self.detector = load_detector()
         self.recognizer = create_recognizer()
-        self.labels = {}      # id LBPH -> nama
+        self.labels = {}      # id -> nama
         if config.LBPH_MODEL_FILE.exists() and config.LBPH_LABELS_FILE.exists():
             self.recognizer.read(str(config.LBPH_MODEL_FILE))
             with open(config.LBPH_LABELS_FILE, encoding="utf-8") as f:
@@ -89,7 +81,6 @@ class FaceEngine:
         return self.labels
 
     def predict(self, face_img):
-        """(nama, jarak) untuk crop wajah grayscale 200x200."""
         label, distance = self.recognizer.predict(face_img)
         return self.labels.get(label), float(distance)
 
@@ -102,8 +93,7 @@ class FaceEngine:
             return Result("no_face", reason="tidak ada wajah terdeteksi")
 
         name, distance = self.predict(crop(gray, face))
-        # skor = 100 - jarak (makin tinggi makin mirip), sama seperti "Match %"
-        score = 100.0 - distance
+        score = 100.0 - distance   # biar kayak "Match %"
         if name is None or distance >= LBPH_THRESHOLD:
             return Result("unknown", name, score,
                           reason=f"jarak {distance:.0f} di atas ambang {LBPH_THRESHOLD}")

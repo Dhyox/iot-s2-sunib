@@ -1,4 +1,4 @@
-"""Penyimpanan log akses & status pintu di SQLite."""
+# log akses + status pintu (sqlite)
 import sqlite3
 import threading
 from datetime import date, datetime, timedelta
@@ -22,18 +22,18 @@ def init_db():
         _conn.executescript("""
         CREATE TABLE IF NOT EXISTS access_log (
             id        INTEGER PRIMARY KEY AUTOINCREMENT,
-            ts        TEXT NOT NULL,          -- 'YYYY-MM-DD HH:MM:SS'
-            method    TEXT NOT NULL,          -- face | rfid | manual
-            identity  TEXT,                   -- nama, NULL kalau tidak dikenal
-            uid       TEXT,                   -- UID kartu (khusus rfid)
-            result    TEXT NOT NULL,          -- granted | denied
-            score     REAL,                   -- skor kemiripan wajah
+            ts        TEXT NOT NULL,
+            method    TEXT NOT NULL,          -- face / rfid / manual
+            identity  TEXT,
+            uid       TEXT,                   -- rfid aja
+            result    TEXT NOT NULL,          -- granted / denied
+            score     REAL,
             note      TEXT
         );
         CREATE TABLE IF NOT EXISTS door_event (
             id    INTEGER PRIMARY KEY AUTOINCREMENT,
             ts    TEXT NOT NULL,
-            state TEXT NOT NULL               -- open | closed
+            state TEXT NOT NULL               -- open / closed
         );
         CREATE INDEX IF NOT EXISTS idx_access_ts ON access_log(ts);
         """)
@@ -58,7 +58,7 @@ def log_door(state):
         last = _conn.execute(
             "SELECT state FROM door_event ORDER BY id DESC LIMIT 1").fetchone()
         if last and last["state"] == state:
-            return  # tidak ada perubahan
+            return  # sama kyk sebelumnya, skip
         _conn.execute("INSERT INTO door_event (ts, state) VALUES (?, ?)",
                       (_now(), state))
         _conn.commit()

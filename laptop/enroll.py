@@ -1,19 +1,8 @@
-"""
-Daftarkan wajah (Haar cascade + LBPH).
-Gabungan dari script collecting data + training.
-
-  python enroll.py Carlson             # ambil 100 foto, GANTI foto lama Carlson, lalu training
-  python enroll.py Carlson --append    # tambah foto tanpa menghapus yang lama
-  python enroll.py Carlson --samples 150
-  python enroll.py --train             # training ulang dari folder data/ saja
-  python enroll.py --list              # daftar orang & jumlah foto
-  python enroll.py --remove Carlson
-
-Foto tersimpan di data/<nama>/<n>.jpg (grayscale 200x200), model di trainer.yml,
-nama tiap id di labels.json. Tekan Q atau Enter untuk batal.
-
-Tips: ambil foto di lokasi gate, dengan cahaya yang sama seperti saat dipakai.
-"""
+# ambil foto wajah + training LBPH (gabungan collecting data & training)
+# python enroll.py Carlson            -> 100 foto, foto lama carlson ditimpa
+# python enroll.py Carlson --append   -> nambah foto
+# python enroll.py --list / --train / --remove Carlson
+# enroll di tempat gate ya, cahayanya ngaruh banget
 import argparse
 import json
 import shutil
@@ -36,9 +25,8 @@ def person_dirs():
     return sorted(d for d in DATA_DIR.iterdir() if d.is_dir() and any(d.glob("*.jpg")))
 
 
+# return [] kalo dicancel (Q / enter)
 def capture(name, n, interval=0.0, title="Enroll wajah"):
-    """Ambil n crop wajah dari webcam, minimal `interval` detik antar foto.
-    Return list kosong kalau dibatalkan."""
     detector = load_detector()
     cap = open_camera()
     if not cap.isOpened():
@@ -82,7 +70,7 @@ def save_faces(name, faces, append):
 
 
 def train():
-    """Latih LBPH dari semua foto di data/ lalu simpan trainer.yml + labels.json."""
+    # id-nya ngikutin urutan folder, jadi labels.json harus ikut disimpen
     faces, ids, labels = [], [], {}
     for label, folder in enumerate(person_dirs(), 1):
         labels[label] = folder.name
