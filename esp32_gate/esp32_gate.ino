@@ -13,13 +13,11 @@
 #define TRIG_PIN    26
 #define ECHO_PIN    27
 #define SERVO_PIN   13
-#define BUZZER_PIN  25
+#define BUZZER_PIN  21   // dulu pin LED biru
 #define LED_R       32
 #define LED_G       33
-#define LED_B       21
 
 // setting
-const bool LED_COMMON_ANODE    = false;
 const bool BUZZER_PASSIVE      = false;  // true kalo buzzernya pasif
 const int  TRIGGER_DISTANCE_CM = 30;
 const int  NEAR_READINGS_NEEDED = 3;     // biar ga ke-trigger noise sensor
@@ -27,7 +25,6 @@ const int  SERVO_CLOSED_DEG    = 0;
 const int  SERVO_OPEN_DEG      = 90;
 const unsigned long SESSION_MS        = 12000;
 const unsigned long RFID_TIMEOUT_MS   = 1500;  // nunggu jawaban laptop
-const unsigned long RED_FLASH_MS      = 800;
 const unsigned long DOOR_OPEN_MS      = 5000;
 const unsigned long COOLDOWN_MS       = 4000;
 const unsigned long DISTANCE_EVERY_MS = 100;
@@ -45,7 +42,6 @@ State state = IDLE;
 
 unsigned long stateStart = 0;
 unsigned long lastDistanceCheck = 0;
-unsigned long flashUntil = 0;
 unsigned long rfidSentAt = 0;
 int nearCount = 0;
 int clearCount = 0;
@@ -54,11 +50,9 @@ bool rfidPending = false;
 String pendingUid = "";
 String serialBuf = "";
 
-void setLed(bool r, bool g, bool b) {
-  bool on = !LED_COMMON_ANODE;
-  digitalWrite(LED_R, r ? on : !on);
-  digitalWrite(LED_G, g ? on : !on);
-  digitalWrite(LED_B, b ? on : !on);
+void setLed(bool red, bool green) {
+  digitalWrite(LED_R, red);
+  digitalWrite(LED_G, green);
 }
 
 void buzz(int ms) {
@@ -72,11 +66,17 @@ void buzz(int ms) {
   }
 }
 
-void beepPattern(int count, int onMs, int offMs) {
+// merah kedip-kedip, `beeps` kedipan pertama sambil bunyi
+// abis itu balik merah nyala terus (sesi masih jalan)
+void blinkRed(int count, int onMs, int offMs, int beeps) {
   for (int i = 0; i < count; i++) {
-    buzz(onMs);
+    setLed(true, false);
+    if (i < beeps) buzz(onMs);
+    else delay(onMs);
+    setLed(false, false);
     delay(offMs);
   }
+  setLed(true, false);
 }
 
 void changeState(State s) {
@@ -86,8 +86,7 @@ void changeState(State s) {
 
 void startSession() {
   rfidPending = false;
-  flashUntil = 0;
-  setLed(false, false, true);            // biru
+  setLed(true, false);                   // merah = nunggu wajah / kartu
   Serial.println("SCAN");
   Serial.println("# sesi dimulai: hadapkan wajah atau tempel kartu");
   changeState(ACTIVE);
@@ -96,7 +95,7 @@ void startSession() {
 void grantAccess() {
   Serial.println("CANCEL");              // stop scan wajah di laptop
   rfidPending = false;
-  setLed(false, true, false);
+  setLed(false, true);
   gateServo.write(SERVO_OPEN_DEG);
   Serial.println("DOOR,OPEN");
   changeState(DOOR_OPEN);
@@ -104,7 +103,7 @@ void grantAccess() {
 
 void closeDoor() {
   gateServo.write(SERVO_CLOSED_DEG);
-  setLed(false, false, false);
+  setLed(false, false);
   Serial.println("DOOR,CLOSED");
   nearCount = 0;
   waitingClear = true;
@@ -114,25 +113,20 @@ void closeDoor() {
 // sesi ga langsung selesai, masih bisa pake kartu
 void faceFailed() {
   Serial.println("# wajah tidak dikenali, kartu masih bisa dipakai");
-  setLed(true, false, false);
-  beepPattern(3, 300, 150);
-  flashUntil = millis() + RED_FLASH_MS;
+  blinkRed(3, 300, 150, 3);
 }
 
 void cardRejected() {
   Serial.println("# kartu ditolak");
-  setLed(true, false, false);
-  beepPattern(1, 150, 0);
-  flashUntil = millis() + RED_FLASH_MS;
+  blinkRed(3, 150, 100, 1);
 }
 
 void sessionTimeout() {
   Serial.println("CANCEL");
   Serial.println("# waktu sesi habis");
-  setLed(true, false, false);
   buzz(600);
   delay(400);
-  setLed(false, false, false);
+  setLed(false, false);
   nearCount = 0;
   waitingClear = true;
   changeState(COOLDOWN);
@@ -210,9 +204,8 @@ void setup() {
   pinMode(BUZZER_PIN, OUTPUT);
   pinMode(LED_R, OUTPUT);
   pinMode(LED_G, OUTPUT);
-  pinMode(LED_B, OUTPUT);
   digitalWrite(BUZZER_PIN, LOW);
-  setLed(false, false, false);
+  setLed(false, false);
 
   SPI.begin();               // SCK 18, MISO 19, MOSI 23
   rfid.PCD_Init();
@@ -265,12 +258,6 @@ void loop() {
     }
 
     case ACTIVE: {
-      // balik biru abis kedip merah
-      if (flashUntil != 0 && now > flashUntil) {
-        flashUntil = 0;
-        setLed(false, false, true);
-      }
-
       if (!rfidPending) {
         String uid = readCardUid();
         if (uid.length() > 0) {

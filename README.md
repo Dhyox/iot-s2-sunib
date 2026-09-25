@@ -1,6 +1,6 @@
 # Smart Gate: Face Recognition + RFID
 
-ESP32 DevKit V1 mengendalikan gate (RFID RC522, HC-SR04, servo, buzzer, LED RGB).
+ESP32 DevKit V1 mengendalikan gate (RFID RC522, HC-SR04, servo, buzzer, LED merah & hijau).
 Laptop menjalankan face recognition lewat webcam (Haar cascade + LBPH), mencatat log
 ke SQLite, dan menyajikan dashboard HTTP. Keduanya terhubung lewat kabel USB (serial).
 
@@ -26,22 +26,34 @@ File yang dibuat saat dipakai (tidak di-commit): `rfid_cards.json` (kartu RFID),
 
 ## Cara kerja
 
-1. Orang mendekat ≤ 30 cm (3 pembacaan berturut-turut) → LED biru, sesi 12 detik dimulai.
-2. Selama sesi, **wajah dan kartu aktif bersamaan**. Mana yang berhasil duluan, gate terbuka.
+1. Tidak ada orang → semua LED mati.
+2. Orang mendekat ≤ 30 cm (3 pembacaan berturut-turut) → **LED merah nyala**, sesi 12 detik dimulai.
+3. Selama sesi, **wajah dan kartu aktif bersamaan**. Mana yang berhasil duluan, gate terbuka.
    - Wajah: laptop menilai hingga 5 frame berisi wajah, gate dibuka kalau minimal 3 frame
      sepakat pada orang yang sama (jarak LBPH < `LBPH_THRESHOLD`).
-     Gagal → alarm 3x + merah sebentar, kartu masih bisa dipakai.
+     Gagal → **merah kedip 3x** + bunyi 3x, kartu masih bisa dipakai.
    - Kartu: UID dicek laptop ke `RFID_CARDS`. Kalau laptop tidak menjawab dalam 1,5 detik,
-     ESP32 memakai daftar cadangan `LOCAL_CARDS`. Kartu salah → bip pendek, sesi lanjut.
-   - Sesi habis tanpa berhasil → bip panjang.
-3. Akses diterima → LED hijau, servo terbuka 5 detik, lalu tertutup + jeda 4 detik.
+     ESP32 memakai daftar cadangan `LOCAL_CARDS`. Kartu salah → **merah kedip 3x** + bip pendek, sesi lanjut.
+   - Sesi habis tanpa berhasil → bip panjang, LED mati.
+4. Akses diterima → **LED hijau nyala**, servo terbuka 5 detik, lalu tertutup (LED mati) + jeda 4 detik.
    Orang harus menjauh dulu sebelum sesi baru.
+
+## Wiring
+
+| Komponen | Pin ESP32 |
+|---|---|
+| RC522 | SS 5, RST 4, SCK 18, MISO 19, MOSI 23, 3.3V |
+| HC-SR04 | TRIG 26, ECHO 27 (pakai voltage divider) |
+| Servo | 13 |
+| Buzzer | 21 |
+| LED merah | 32 (pakai resistor) |
+| LED hijau | 33 (pakai resistor) |
 
 ## 1. ESP32
 
 1. Arduino IDE → Boards Manager: install **esp32** (Espressif). Pilih board **DOIT ESP32 DEVKIT V1**.
 2. Library Manager: install **MFRC522** dan **ESP32Servo**.
-3. Buka `esp32_gate/esp32_gate.ino`, cek bagian *Pengaturan* (LED common anode? buzzer pasif?), lalu upload.
+3. Buka `esp32_gate/esp32_gate.ino`, cek bagian setting (buzzer pasif?), lalu upload.
 4. Tes cepat lewat Serial Monitor (115200, line ending "Newline"): harus muncul `READY`.
    Ketik `OPEN` untuk tes servo, atau dekatkan tangan ke sensor lalu ketik `FACE,OK,Tes`.
 5. **Tutup Serial Monitor** sebelum menjalankan program Python.
