@@ -24,7 +24,7 @@ from config import (BAUD_RATE, DASHBOARD_HOST, DASHBOARD_PORT, RFID_CARDS,
 from face_engine import FaceEngine, open_camera
 
 # Voting multi-frame (bisa ditimpa dari config.py)
-VOTE_FRAMES = getattr(config, "VOTE_FRAMES", 5)          # frame berkualitas yang dinilai
+VOTE_FRAMES = getattr(config, "VOTE_FRAMES", 5)          # frame berisi wajah yang dinilai
 VOTES_NEEDED = getattr(config, "VOTES_NEEDED", 3)        # minimal frame yang sepakat
 FRAME_INTERVAL_SEC = getattr(config, "FRAME_INTERVAL_SEC", 0.15)  # jeda antar frame dinilai
 
@@ -120,7 +120,7 @@ class GateBridge:
 
     def _face_scan(self):
         """
-        Voting multi-frame: nilai hingga VOTE_FRAMES frame berkualitas bagus.
+        Voting multi-frame: nilai hingga VOTE_FRAMES frame yang ada wajahnya.
         Gate dibuka hanya kalau minimal VOTES_NEEDED frame sepakat pada orang yang sama.
         """
         if not self.cap.isOpened():
@@ -132,8 +132,7 @@ class GateBridge:
         votes, vote_scores = Counter(), defaultdict(list)
         outcomes = Counter()
         judged, last_judged = 0, 0.0
-        skipped = Counter()         # alasan frame dilewati (kualitas)
-        closest_name, closest_score = None, 0.0
+        closest_name, closest_score = None, None
 
         while time.time() < deadline and judged < VOTE_FRAMES:
             if self.cancel_scan.is_set():
@@ -144,17 +143,14 @@ class GateBridge:
                 continue
 
             r = self.engine.identify(frame)
-            if r.status in ("no_face", "low_quality"):
-                if r.status == "low_quality":   # wajah ada tapi tidak layak
-                    skipped[r.reason.split(" (")[0]] += 1
+            if r.status == "no_face":
                 continue
 
             last_judged = time.time()
             judged += 1
             outcomes[r.status] += 1
-            second = f", ke-2 {r.second_name} {r.second_score:.2f}" if r.second_name else ""
-            print(f"  frame {judged}: {r.status:<9} {r.name} {r.score:.2f}{second}")
-            if r.score > closest_score:
+            print(f"  frame {judged}: {r.status:<7} {r.name} {r.score:.1f}")
+            if r.name and (closest_score is None or r.score > closest_score):
                 closest_name, closest_score = r.name, r.score
 
             if r.status == "match":
@@ -173,24 +169,22 @@ class GateBridge:
         if winner and n >= VOTES_NEEDED:
             score = sum(vote_scores[winner]) / n
             self.send(f"FACE,OK,{winner}")
-            db.log_access("face", "granted", identity=winner, score=round(score, 3),
+            db.log_access("face", "granted", identity=winner, score=round(score, 1),
                           note=f"{n}/{judged} frame sepakat")
             return
 
         self.send("FACE,FAIL")
         if judged == 0:
-            reason = skipped.most_common(1)[0][0] if skipped else "tidak ada wajah terdeteksi"
-            note = f"tidak ada frame layak: {reason}"
-        elif outcomes["ambiguous"] and outcomes["ambiguous"] >= outcomes["unknown"]:
-            note = "ragu: skor mirip beberapa orang"
+            note = "tidak ada wajah terdeteksi"
         elif outcomes["unknown"]:
             note = "wajah tidak dikenal"
         else:
             note = "frame tidak sepakat"
-        if closest_name and judged:
+        if closest_name:
             note += f" (terdekat {closest_name}, {votes[closest_name]}/{judged} frame)"
         db.log_access("face", "denied",
-                      score=round(closest_score, 3) if judged else None, note=note)
+                      score=round(closest_score, 1) if closest_score is not None else None,
+                      note=note)
 
     # ---------- dari dashboard ----------
     def manual_open(self):

@@ -1,194 +1,158 @@
 """
-Evaluasi akurasi & kalibrasi threshold face recognition.
+Evaluasi akurasi & kalibrasi LBPH_THRESHOLD.
 
 1) Kumpulkan data uji. Lakukan di SESI BERBEDA dari enroll (jam/hari lain),
    supaya hasilnya jujur:
-     python evaluate.py collect Miyano      # orang yang terdaftar
+     python evaluate.py collect Carlson     # orang yang terdaftar
      python evaluate.py collect tamu1       # orang yang TIDAK terdaftar (uji false accept)
-   Tiap orang ~40 frame, tersimpan di folder eval_data/.
+   Tiap orang ~40 foto wajah, tersimpan di folder eval_data/.
 
 2) Buat laporan:
      python evaluate.py report
    -> ringkasan di terminal + grafik eval_report.png
 
 Istilah:
-  genuine  = skor wajah terhadap dirinya sendiri (harus tinggi)
-  impostor = skor wajah terhadap orang lain (harus rendah)
-  FAR      = False Accept Rate, orang salah diterima
-  FRR      = False Reject Rate, orang benar ditolak
+  jarak    = jarak LBPH ke orang paling mirip (0 = sama persis, makin kecil makin mirip)
+  FAR      = False Accept Rate, frame yang membuat gate menerima orang yang salah
+             (orang asing, atau orang terdaftar dikenali sebagai orang lain)
+  FRR      = False Reject Rate, frame orang terdaftar yang tidak dikenali sebagai dirinya
   EER      = titik saat FAR = FRR
 """
 import argparse
-import time
 from collections import Counter, defaultdict
-from pathlib import Path
 
-import cv2
 import numpy as np
 
 import face_engine as fe
 from config import BASE_DIR
-from face_engine import FaceEngine, open_camera
+from enroll import capture
+from face_engine import FaceEngine
 
 EVAL_DIR = BASE_DIR / "eval_data"
 
 
 # ---------------- collect ----------------
 def collect(name, n):
-    engine = FaceEngine()
-    cap = open_camera()
-    if not cap.isOpened():
-        raise SystemExit("Webcam tidak bisa dibuka.")
-    feats, last = [], 0.0
-    print(f"Merekam {n} frame untuk '{name}'. Bergerak natural seperti saat lewat gate. Q = batal.")
-    while len(feats) < n:
-        ok, frame = cap.read()
-        if not ok:
-            continue
-        preview = frame.copy()
-        faces = engine.detect_all(frame)
-        msg = "Wajah tidak terdeteksi" if not faces else ""
-        if len(faces) > 1:
-            msg = "Hanya boleh 1 wajah"
-        elif len(faces) == 1:
-            good, reason, aligned, _ = engine.quality(frame, faces[0])
-            engine.draw_face(preview, faces[0], (0, 200, 0) if good else (0, 165, 255))
-            msg = reason
-            if good and time.time() - last > 0.25:
-                feats.append(engine.embed_aligned(aligned))
-                last = time.time()
-        cv2.putText(preview, f"{name}: {len(feats)}/{n}  {msg}", (12, 30),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 200, 0), 2)
-        cv2.imshow("Kumpulkan data uji", preview)
-        if cv2.waitKey(1) & 0xFF == ord("q"):
-            print("Dibatalkan.")
-            cap.release()
-            cv2.destroyAllWindows()
-            return
-    cap.release()
-    cv2.destroyAllWindows()
+    faces = capture(name, n, interval=0.25, title="Kumpulkan data uji")
+    if len(faces) < n:
+        return
     EVAL_DIR.mkdir(exist_ok=True)
-    np.save(EVAL_DIR / f"{name}.npy", np.stack(feats))
+    np.save(EVAL_DIR / f"{name}.npy", np.stack(faces))
     print(f"Tersimpan: eval_data/{name}.npy")
 
 
 # ---------------- report ----------------
-def rates(genuine, impostor, t):
-    far = float(np.mean(impostor >= t)) if len(impostor) else 0.0
-    frr = float(np.mean(genuine < t)) if len(genuine) else 0.0
+def load_probes():
+    probes = {}
+    for f in (sorted(EVAL_DIR.glob("*.npy")) if EVAL_DIR.exists() else []):
+        data = np.load(f)
+        if data.ndim != 3 or data.shape[1:] != fe.FACE_SIZE[::-1]:
+            print(f"Lewati {f.name}: format lama/tidak cocok, kumpulkan ulang.")
+            continue
+        probes[f.stem] = data
+    return probes
+
+
+def rates(dist, correct, enrolled, t):
+    accepted = dist < t
+    far = float(np.mean(accepted & ~correct))
+    frr = float(np.mean(~(accepted & correct)[enrolled])) if enrolled.any() else 0.0
     return far, frr
-
-
-def analyse(engine, probes):
-    """Hitung skor genuine/impostor, keputusan per frame, dan margin."""
-    genuine, impostor = [], []
-    confusion = defaultdict(Counter)
-    wrong_margins, right_margins = [], []
-    for true_name, feats in probes.items():
-        for f in feats:
-            ranked = engine.scores(fe.normalize(f))
-            for name, s in ranked:
-                (genuine if name == true_name else impostor).append(s)
-            r = engine.decide(ranked)
-            if r.status == "match":
-                pred = r.name
-            elif r.status == "ambiguous":
-                pred = "(ditolak: ragu)"
-            else:
-                pred = "(ditolak)"
-            confusion[true_name][pred] += 1
-            if true_name in engine.gallery and len(ranked) > 1:
-                margin = ranked[0][1] - ranked[1][1]
-                (right_margins if ranked[0][0] == true_name else wrong_margins).append(margin)
-    return (np.array(genuine), np.array(impostor), confusion,
-            np.array(right_margins), np.array(wrong_margins))
 
 
 def report():
     engine = FaceEngine()
-    if not engine.gallery:
+    if not engine.known:
         raise SystemExit("Belum ada wajah terdaftar. Jalankan enroll.py dulu.")
-    files = sorted(EVAL_DIR.glob("*.npy")) if EVAL_DIR.exists() else []
-    if not files:
+    probes = load_probes()
+    if not probes:
         raise SystemExit("Belum ada data uji. Jalankan: python evaluate.py collect <nama>")
-    probes = {f.stem: np.load(f) for f in files}
 
-    genuine, impostor, confusion, right_m, wrong_m = analyse(engine, probes)
-    enrolled = [n for n in probes if n in engine.gallery]
-    strangers = [n for n in probes if n not in engine.gallery]
+    registered = set(engine.known.values())
+    true_names, pred_names, dists = [], [], []
+    for true_name, faces in probes.items():
+        for face in faces:
+            name, dist = engine.predict(face)
+            true_names.append(true_name)
+            pred_names.append(name)
+            dists.append(dist)
+    dist = np.array(dists)
+    correct = np.array([t == p for t, p in zip(true_names, pred_names)])
+    enrolled = np.array([t in registered for t in true_names])
 
+    enrolled_names = [n for n in probes if n in registered]
+    strangers = [n for n in probes if n not in registered]
     print("=" * 64)
-    print(f"Terdaftar di galeri : {', '.join(engine.gallery)}")
-    print(f"Data uji terdaftar  : {', '.join(enrolled) or '-'}")
+    print(f"Terdaftar di model  : {', '.join(sorted(registered))}")
+    print(f"Data uji terdaftar  : {', '.join(enrolled_names) or '-'}")
     print(f"Data uji asing      : {', '.join(strangers) or '- (disarankan ada, untuk uji false accept)'}")
-    print(f"Skor genuine  : n={len(genuine)}, rata-rata {genuine.mean() if len(genuine) else 0:.3f}")
-    print(f"Skor impostor : n={len(impostor)}, rata-rata {impostor.mean():.3f}, "
-          f"tertinggi {impostor.max():.3f}")
+    if correct.any():
+        print(f"Jarak saat tebakan BENAR : n={correct.sum()}, rata-rata {dist[correct].mean():.1f}, "
+              f"terjauh {dist[correct].max():.1f}")
+    if (~correct).any():
+        print(f"Jarak saat tebakan SALAH : n={(~correct).sum()}, rata-rata {dist[~correct].mean():.1f}, "
+              f"terdekat {dist[~correct].min():.1f}")
 
     # --- sweep threshold ---
-    ts = np.linspace(0, 1, 1001)
-    curve = np.array([rates(genuine, impostor, t) for t in ts])
+    ts = np.arange(0, 150.5, 0.5)
+    curve = np.array([rates(dist, correct, enrolled, t) for t in ts])
     far, frr = curve[:, 0], curve[:, 1]
     rec = {}
-    if len(genuine):
+    if enrolled.any() and (~correct).any():
         i = int(np.argmin(np.abs(far - frr)))
-        print(f"\nEER ≈ {(far[i] + frr[i]) / 2:.1%} pada threshold {ts[i]:.3f}")
+        print(f"\nEER ≈ {(far[i] + frr[i]) / 2:.1%} pada threshold {ts[i]:.1f}")
     for target in (0.01, 0.001):
         idx = np.where(far <= target)[0]
         if len(idx):
-            t = ts[idx[0]]
+            t = ts[idx[-1]]       # threshold terbesar yang FAR-nya masih di bawah target
             rec[target] = t
-            print(f"Threshold untuk FAR ≤ {target:.1%}: {t:.3f}  (FRR {rates(genuine, impostor, t)[1]:.1%})")
-    cur_far, cur_frr = rates(genuine, impostor, fe.MATCH_THRESHOLD)
-    print(f"Threshold sekarang {fe.MATCH_THRESHOLD:.3f}: FAR {cur_far:.1%}, FRR {cur_frr:.1%}"
+            print(f"Threshold untuk FAR ≤ {target:.1%}: {t:.1f}  "
+                  f"(FRR {rates(dist, correct, enrolled, t)[1]:.1%})")
+    cur_far, cur_frr = rates(dist, correct, enrolled, fe.LBPH_THRESHOLD)
+    print(f"Threshold sekarang {fe.LBPH_THRESHOLD}: FAR {cur_far:.1%}, FRR {cur_frr:.1%}"
           "  (per frame, sebelum voting)")
 
-    # --- margin ---
-    if len(wrong_m):
-        suggest = float(np.percentile(wrong_m, 95))
-        lost = float(np.mean(right_m < suggest)) if len(right_m) else 0.0
-        print(f"\nTop-1 salah orang: {len(wrong_m)} frame, margin 95% di bawah {suggest:.3f}")
-        print(f"  MATCH_MARGIN {suggest:.3f} akan menolak ~95% kasus salah orang, "
-              f"dan {lost:.1%} frame yang sebenarnya benar")
-    else:
-        print("\nTidak ada frame dengan top-1 salah orang. MATCH_MARGIN sekarang sudah cukup.")
-
     # --- tabel keputusan ---
-    print(f"\nKeputusan per frame (threshold {fe.MATCH_THRESHOLD}, margin {fe.MATCH_MARGIN}):")
+    confusion = defaultdict(Counter)
+    for t, p, d in zip(true_names, pred_names, dist):
+        confusion[t][p if d < fe.LBPH_THRESHOLD else "(ditolak)"] += 1
+    print(f"\nKeputusan per frame (threshold {fe.LBPH_THRESHOLD}):")
     for true_name in probes:
         total = sum(confusion[true_name].values())
         parts = ", ".join(f"{p} {c / total:.0%}"
                           for p, c in confusion[true_name].most_common())
-        tag = "" if true_name in engine.gallery else " [asing]"
+        tag = "" if true_name in registered else " [asing]"
         print(f"  {true_name + tag:<20} -> {parts}")
     print("Catatan: voting multi-frame di main.py menekan error lebih jauh dari angka per frame ini.")
 
-    plot(genuine, impostor, ts, far, frr, rec)
+    plot(dist, correct, ts, far, frr, rec)
 
 
-def plot(genuine, impostor, ts, far, frr, rec):
+def plot(dist, correct, ts, far, frr, rec):
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
 
     fig, (a1, a2) = plt.subplots(1, 2, figsize=(12, 4.5))
-    bins = np.linspace(-0.2, 1, 61)
-    a1.hist(impostor, bins=bins, alpha=0.6, label="impostor (orang lain)", color="#C23A2B")
-    if len(genuine):
-        a1.hist(genuine, bins=bins, alpha=0.6, label="genuine (diri sendiri)", color="#1E8C4E")
-    a1.axvline(fe.MATCH_THRESHOLD, color="black", ls="--",
-               label=f"threshold sekarang {fe.MATCH_THRESHOLD:.2f}")
+    bins = np.linspace(0, max(150, float(dist.max()) + 5), 61)
+    if (~correct).any():
+        a1.hist(dist[~correct], bins=bins, alpha=0.6,
+                label="tebakan salah (orang lain/asing)", color="#C23A2B")
+    if correct.any():
+        a1.hist(dist[correct], bins=bins, alpha=0.6, label="tebakan benar", color="#1E8C4E")
+    a1.axvline(fe.LBPH_THRESHOLD, color="black", ls="--",
+               label=f"threshold sekarang {fe.LBPH_THRESHOLD}")
     if 0.01 in rec:
-        a1.axvline(rec[0.01], color="#2C6FB7", ls=":", label=f"FAR ≤ 1%: {rec[0.01]:.2f}")
-    a1.set_xlabel("skor kemiripan")
+        a1.axvline(rec[0.01], color="#2C6FB7", ls=":", label=f"FAR ≤ 1%: {rec[0.01]:.1f}")
+    a1.set_xlabel("jarak LBPH (makin kecil makin mirip)")
     a1.set_ylabel("jumlah frame")
-    a1.set_title("Distribusi skor")
+    a1.set_title("Distribusi jarak")
     a1.legend()
 
     a2.plot(ts, far, label="FAR", color="#C23A2B")
     a2.plot(ts, frr, label="FRR", color="#1E8C4E")
-    a2.axvline(fe.MATCH_THRESHOLD, color="black", ls="--")
-    a2.set_xlabel("threshold")
+    a2.axvline(fe.LBPH_THRESHOLD, color="black", ls="--")
+    a2.set_xlabel("threshold (jarak)")
     a2.set_ylabel("rate")
     a2.set_title("FAR / FRR terhadap threshold")
     a2.legend()
