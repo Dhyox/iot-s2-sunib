@@ -32,7 +32,7 @@ const unsigned long DISTANCE_EVERY_MS = 100;
 
 // cadangan kalo laptop mati / ga jawab
 // NOTE: jangan taro UID asli disini, repo publik
-const char* LOCAL_CARDS[] = { "A1B2C3D4" };
+const char* LOCAL_CARDS[] = { "73305006" };
 const int LOCAL_CARD_COUNT = sizeof(LOCAL_CARDS) / sizeof(LOCAL_CARDS[0]);
 
 MFRC522 rfid(RC522_SS, RC522_RST);
@@ -46,8 +46,6 @@ unsigned long sessionMs = SESSION_MS;
 unsigned long lastDistanceCheck = 0;
 unsigned long rfidSentAt = 0;
 int nearCount = 0;
-int clearCount = 0;
-bool waitingClear = false;   // abis gate kebuka, orangnya harus lewat/pergi dulu baru bisa sesi baru
 bool rfidPending = false;
 String pendingUid = "";
 String serialBuf = "";
@@ -109,8 +107,7 @@ void closeDoor() {
   setLed(false, false);
   Serial.println("DOOR,CLOSED");
   nearCount = 0;
-  waitingClear = true;
-  changeState(COOLDOWN);
+  changeState(COOLDOWN);   // abis cooldown langsung deteksi lagi, ga perlu nunggu orangnya pergi
 }
 
 // sesi ga langsung selesai, masih bisa pake kartu
@@ -134,7 +131,6 @@ void sessionTimeout() {
   delay(400);
   setLed(false, false);
   nearCount = 0;
-  waitingClear = false;   // gagal, orangnya boleh langsung coba lagi ga usah pergi dulu
   changeState(COOLDOWN);
 }
 
@@ -245,15 +241,6 @@ void loop() {
 
       long d = readDistanceCm();
       bool isNear = d > 0 && d <= TRIGGER_DISTANCE_CM;
-
-      if (waitingClear) {
-        clearCount = isNear ? 0 : clearCount + 1;
-        if (clearCount >= 3) {
-          waitingClear = false;
-          clearCount = 0;
-        }
-        break;
-      }
 
       nearCount = isNear ? nearCount + 1 : 0;
       if (nearCount >= NEAR_READINGS_NEEDED) {

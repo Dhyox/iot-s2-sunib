@@ -33,10 +33,11 @@ File yang dibuat saat dipakai (tidak di-commit): `rfid_cards.json` (kartu RFID),
      Gagal → **merah kedip 3x** + bunyi 3x, lalu masih ada 2 detik untuk tempel kartu.
    - Kartu: UID dicek laptop ke `rfid_cards.json`. Kalau laptop tidak menjawab dalam 1,5 detik,
      ESP32 memakai daftar cadangan `LOCAL_CARDS`. Kartu salah → **merah kedip 3x** + bip pendek, sesi lanjut.
-   - Sesi habis tanpa berhasil → bip panjang, LED mati, jeda 2 detik. Kalau orangnya masih
-     di depan sensor, sesi baru langsung mulai lagi.
+   - Sesi habis tanpa berhasil → bip panjang, LED mati, jeda 2 detik.
 4. Akses diterima → **LED hijau nyala**, servo terbuka 5 detik, lalu tertutup (LED mati) + jeda 2 detik.
-   Orang harus lewat/menjauh dulu sebelum sesi baru.
+5. Setelah jeda, sensor langsung mendeteksi lagi (tidak perlu menunggu orang pergi dulu).
+   Jadi orang berikutnya bisa langsung maju. Kalau ada benda diam dalam jarak
+   `TRIGGER_DISTANCE_CM`, sesi akan terus terpicu, jadi atur posisi sensor / jaraknya.
 
 ### Face recognition
 
