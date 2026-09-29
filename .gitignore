@@ -68,3 +68,7 @@ laptop/embeddings.pkl
 laptop/models/
 laptop/gate.db
 laptop/rfid_cards.json
+laptop/cloud.json
+
+### Vercel
+.vercel/

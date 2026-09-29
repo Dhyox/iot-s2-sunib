@@ -2,26 +2,40 @@
 
 ESP32 DevKit V1 mengendalikan gate (RFID RC522, HC-SR04, servo, buzzer, LED merah & hijau).
 Laptop menjalankan face recognition lewat webcam (InsightFace / ArcFace), mencatat log
-ke SQLite, dan menyajikan dashboard HTTP. Keduanya terhubung lewat kabel USB (serial).
+ke SQLite, dan menyajikan dashboard lokal. Keduanya terhubung lewat kabel USB (serial).
+Log juga di-upload ke dashboard online di Vercel (database Neon Postgres).
+
+```
+ESP32 ⇄ USB ⇄ laptop (main.py: face recog, RFID, serial) ──HTTPS──→ Vercel API ──→ Neon DB
+                  └─ dashboard lokal (localhost:5000)                  └─ dashboard online
+```
 
 ```
 iot-s2-sunib/
 ├── esp32_gate/esp32_gate.ino   firmware ESP32
-└── laptop/
-    ├── config.py               port COM, kamera, threshold
-    ├── rfid_cards.example.json contoh daftar kartu RFID (salin ke rfid_cards.json)
-    ├── face_engine.py          deteksi + pengenalan wajah (InsightFace / ArcFace)
-    ├── enroll.py               daftarkan wajah
-    ├── evaluate.py             uji akurasi & kalibrasi threshold
-    ├── database.py             SQLite: log akses & status pintu
-    ├── main.py                 bridge serial + server dashboard
-    ├── templates/dashboard.html
-    └── static/chart.umd.min.js Chart.js lokal (dashboard jalan tanpa internet)
+├── laptop/                     jalan di laptop gate
+│   ├── config.py               port COM, kamera, threshold
+│   ├── rfid_cards.example.json contoh daftar kartu RFID (salin ke rfid_cards.json)
+│   ├── cloud.example.json      contoh setting dashboard online (salin ke cloud.json)
+│   ├── face_engine.py          deteksi + pengenalan wajah (InsightFace / ArcFace)
+│   ├── enroll.py               daftarkan wajah
+│   ├── evaluate.py             uji akurasi & kalibrasi threshold
+│   ├── database.py             SQLite: log akses & status pintu (+ antrian upload)
+│   ├── cloud.py                upload log ke dashboard online
+│   ├── main.py                 bridge serial + server dashboard lokal
+│   ├── templates/dashboard.html
+│   └── static/chart.umd.min.js Chart.js lokal (dashboard jalan tanpa internet)
+└── web/                        dashboard online, di-deploy ke Vercel
+    ├── api/index.py            API: /api/ingest (dari laptop), /api/status, /api/logs, /api/stats
+    ├── public/index.html       halaman dashboard online
+    ├── schema.sql              tabel database (jalankan sekali di Neon)
+    ├── requirements.txt
+    └── vercel.json
 ```
 
 File yang dibuat saat dipakai (tidak di-commit): `rfid_cards.json` (kartu RFID),
-`models/` (model InsightFace, diunduh otomatis), `embeddings.pkl` (data wajah),
-`gate.db` (log), `eval_data/` dan `eval_report.png` (evaluasi).
+`cloud.json` (URL + key dashboard online), `models/` (model InsightFace, diunduh otomatis),
+`embeddings.pkl` (data wajah), `gate.db` (log), `eval_data/` dan `eval_report.png` (evaluasi).
 
 ## Cara kerja
 
@@ -87,8 +101,9 @@ Salin UID-nya ke `rfid_cards.json`, lalu restart `main.py`.
 ### Data yang tidak di-commit
 
 Repo ini publik, jadi data berikut hanya disimpan di laptop gate (sudah ada di `.gitignore`):
-`rfid_cards.json` (UID kartu asli), `embeddings.pkl` (data wajah), `gate.db` (log akses),
-`models/`, `eval_data/`. Setiap laptop harus enroll wajah dan mengisi `rfid_cards.json` sendiri.
+`rfid_cards.json` (UID kartu asli), `cloud.json` (key dashboard online), `embeddings.pkl`
+(data wajah), `gate.db` (log akses), `models/`, `eval_data/`. Setiap laptop harus enroll wajah
+dan mengisi `rfid_cards.json` (dan `cloud.json` kalau pakai dashboard online) sendiri.
 
 ### Mengelola wajah
 
@@ -118,6 +133,39 @@ python evaluate.py collect tamu1     # orang asing
 python evaluate.py report            # FAR, FRR, EER, saran threshold & margin + eval_report.png
 ```
 
+## 3. Dashboard online (Vercel + Neon)
+
+Vercel hanya men-deploy folder `web/`. Semua yang lain (face recognition, serial, data wajah)
+tetap di laptop. Laptop mengirim log ke Vercel, jadi dashboard online bisa dibuka dari mana saja.
+Kalau laptop mati, dashboard online tetap bisa dibuka (menampilkan log lama + status **Gate offline**).
+
+**Setup (sekali):**
+
+1. Buat akun di [vercel.com](https://vercel.com) (login pakai GitHub).
+2. *Add New → Project* → import repo ini.
+   - **Framework Preset:** `Other`
+   - **Root Directory:** `web`
+   - Build & Output Settings: biarkan default.
+3. Setelah project jadi: tab **Storage** → *Create Database* → **Neon** (Postgres) → connect ke project.
+   Vercel otomatis menambahkan `DATABASE_URL` ke Environment Variables.
+4. Buka database di Neon (*Open in Neon* → **SQL Editor**), paste isi `web/schema.sql`, lalu *Run*.
+5. *Settings → Environment Variables* → tambah `INGEST_KEY` = password acak buatan sendiri
+   (misal 30+ karakter). Lalu *Deployments → ... → Redeploy* supaya terbaca.
+6. Di laptop gate:
+   ```bash
+   copy cloud.example.json cloud.json    # Linux/macOS: cp
+   ```
+   Isi `url` dengan alamat Vercel (misal `https://iot-s2-sunib.vercel.app`) dan `key` dengan
+   `INGEST_KEY` yang sama. Jalankan ulang `python main.py`, harus muncul
+   `Upload ke dashboard online: https://...`.
+7. Buka alamat Vercel. Tempel kartu / scan wajah, log harus muncul dalam beberapa detik.
+
+Setelah itu setiap `git push` otomatis men-deploy ulang dashboard online.
+
+**Cara kerja upload:** setiap log masuk ke `gate.db` dan antrian `outbox`. `cloud.py` mengirim
+antrian itu ke `POST /api/ingest` tiap 2 detik, plus *heartbeat* tiap 10 detik. Kalau internet
+putus, log tetap disimpan di antrian dan dikirim saat online lagi. UID kartu **tidak** di-upload.
+
 ## Protokol serial (115200 baud, satu baris per pesan)
 
 | Arah | Pesan | Arti |
@@ -137,12 +185,13 @@ ditampilkan sebagai `<- ?? ...`.
 
 ## API dashboard
 
-| Endpoint | Isi |
-|---|---|
-| `GET /api/status` | status pintu, koneksi ESP32, ringkasan hari ini |
-| `GET /api/logs?limit=50` | log akses terbaru |
-| `GET /api/stats?days=14` | akses per hari, per metode, per jam |
-| `POST /api/unlock` | buka gate dari dashboard |
+| Endpoint | Lokal (`main.py`) | Online (`web/`) | Isi |
+|---|---|---|---|
+| `GET /api/status` | ✔ | ✔ | status pintu, koneksi ESP32 (+ online/offline), ringkasan hari ini |
+| `GET /api/logs?limit=50` | ✔ | ✔ | log akses terbaru |
+| `GET /api/stats?days=14` | ✔ | ✔ | akses per hari, per metode, per jam |
+| `POST /api/unlock` | ✔ | – | buka gate dari dashboard (hanya lokal) |
+| `POST /api/ingest` | – | ✔ | laptop kirim log + heartbeat (`Authorization: Bearer <INGEST_KEY>`) |
 
 ## Troubleshooting
 
@@ -159,11 +208,23 @@ ditampilkan sebagai `<- ?? ...`.
   Gunakan `python evaluate.py report` untuk memilih nilai yang tepat.
 - **Face recog terpicu terus / tidak pernah**: atur `TRIGGER_DISTANCE_CM` di `.ino`, cek voltage divider Echo.
 - **ESP32 reset saat servo bergerak** (`Brownout detector was triggered`): pasang kapasitor di rail 5V, atau pindah ke supply 5V eksternal.
+- **Dashboard online: `cloud: server nolak, HTTP 401`**: `key` di `cloud.json` beda dengan `INGEST_KEY`
+  di Vercel, atau belum redeploy setelah menambah `INGEST_KEY`.
+- **Dashboard online: "Server dashboard tidak merespons"**: buka `https://<project>.vercel.app/api/status`,
+  kalau isinya `DATABASE_URL belum di-set`, Neon belum di-connect; kalau error `relation ... does not exist`,
+  `schema.sql` belum dijalankan. Detail error ada di Vercel → *Logs*.
+- **Dashboard online 404 di halaman utama**: cek *Root Directory* = `web`, dan *Output Directory* kosong
+  (atau isi `public`).
+- **Dashboard online selalu "Gate offline"**: pastikan `main.py` menampilkan `Upload ke dashboard online`
+  dan laptop terhubung internet.
 
 ## Limitasi (untuk laporan)
 
 - Belum ada liveness detection, jadi foto wajah di HP bisa menipu sistem.
 - Akurasi tetap bergantung pada kondisi enroll (cahaya, jarak, pose). Enroll sebaiknya di lokasi gate.
 - Endpoint `/api/unlock` tidak memakai autentikasi. Siapa pun di jaringan yang sama bisa membuka gate.
+  Karena itu tombol buka gate tidak ada di dashboard online.
+- Dashboard online tidak memakai login. Siapa pun yang tahu link-nya bisa melihat nama & waktu akses.
+- Dashboard online hanya ter-update kalau laptop menyala dan terhubung internet.
 - Face recognition bergantung pada laptop. Kalau laptop mati, hanya kartu di `LOCAL_CARDS` yang bisa membuka gate.
 - Model InsightFace (buffalo_l / buffalo_s) hanya untuk penggunaan non-komersial.

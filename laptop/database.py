@@ -1,9 +1,12 @@
 # log akses + status pintu (sqlite)
+# kalo cloud.json ada, tiap log juga masuk tabel outbox buat di-upload cloud.py ke dashboard online
+import json
 import sqlite3
 import threading
+import uuid
 from datetime import date, datetime, timedelta
 
-from config import DB_FILE
+from config import CLOUD, DB_FILE
 
 _lock = threading.Lock()
 
@@ -36,31 +39,64 @@ def init_db():
             state TEXT NOT NULL               -- open / closed
         );
         CREATE INDEX IF NOT EXISTS idx_access_ts ON access_log(ts);
+        CREATE TABLE IF NOT EXISTS outbox (
+            id       INTEGER PRIMARY KEY AUTOINCREMENT,
+            payload  TEXT NOT NULL            -- event json yg belum ke-upload
+        );
         """)
         _conn.commit()
 
 
 def _now():
-    return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    # (buat sqlite lokal, buat online: iso + timezone +07:00 biar server vercel ga salah jam)
+    now = datetime.now().astimezone()
+    return now.strftime("%Y-%m-%d %H:%M:%S"), now.isoformat(timespec="seconds")
+
+
+def _queue(event):
+    # dipanggil pas lagi pegang _lock
+    if CLOUD:
+        event["event_id"] = uuid.uuid4().hex
+        _conn.execute("INSERT INTO outbox (payload) VALUES (?)", (json.dumps(event),))
 
 
 def log_access(method, result, identity=None, uid=None, score=None, note=None):
+    ts, iso = _now()
     with _lock:
         _conn.execute(
             "INSERT INTO access_log (ts, method, identity, uid, result, score, note)"
             " VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (_now(), method, identity, uid, result, score, note))
+            (ts, method, identity, uid, result, score, note))
+        # uid kartu ga ikut dikirim, dashboard online bisa diliat orang
+        _queue({"type": "access", "ts": iso, "method": method, "identity": identity,
+                "result": result, "score": score, "note": note})
         _conn.commit()
 
 
 def log_door(state):
+    ts, iso = _now()
     with _lock:
         last = _conn.execute(
             "SELECT state FROM door_event ORDER BY id DESC LIMIT 1").fetchone()
         if last and last["state"] == state:
             return  # sama kyk sebelumnya, skip
-        _conn.execute("INSERT INTO door_event (ts, state) VALUES (?, ?)",
-                      (_now(), state))
+        _conn.execute("INSERT INTO door_event (ts, state) VALUES (?, ?)", (ts, state))
+        _queue({"type": "door", "ts": iso, "state": state})
+        _conn.commit()
+
+
+def outbox_peek(limit=50):
+    with _lock:
+        rows = _conn.execute(
+            "SELECT id, payload FROM outbox ORDER BY id LIMIT ?", (limit,)).fetchall()
+    return [(r["id"], json.loads(r["payload"])) for r in rows]
+
+
+def outbox_delete(ids):
+    if not ids:
+        return
+    with _lock:
+        _conn.executemany("DELETE FROM outbox WHERE id = ?", [(i,) for i in ids])
         _conn.commit()
 
 

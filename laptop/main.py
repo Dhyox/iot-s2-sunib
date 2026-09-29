@@ -9,6 +9,7 @@ from collections import Counter, defaultdict
 import serial
 from flask import Flask, jsonify, render_template, request
 
+import cloud
 import database as db
 import config
 from config import (BAUD_RATE, DASHBOARD_HOST, DASHBOARD_PORT, RFID_CARDS,
@@ -259,6 +260,7 @@ def main():
     db.init_db()
     bridge = GateBridge()
     threading.Thread(target=bridge.run, daemon=True).start()
+    cloud.start(lambda: (bridge.connected, db.door_status()["state"]))
 
     logging.getLogger("werkzeug").setLevel(logging.WARNING)  # biar terminal ga spam log polling
     print(f"Dashboard: http://localhost:{DASHBOARD_PORT}")

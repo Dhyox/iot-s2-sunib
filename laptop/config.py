@@ -42,3 +42,22 @@ RFID_CARDS = _load_rfid_cards()
 DB_FILE = BASE_DIR / "gate.db"
 DASHBOARD_HOST = "0.0.0.0"   # biar bisa dibuka dari HP (1 wifi)
 DASHBOARD_PORT = 5000
+
+# dashboard online (vercel). isi di cloud.json (ga di-commit, ada key rahasia):
+#   {"url": "https://nama-project.vercel.app", "key": "INGEST_KEY yg sama kayak di vercel"}
+# kalo file-nya ga ada, upload ke online dimatiin aja, dashboard lokal tetep jalan
+CLOUD_FILE = BASE_DIR / "cloud.json"
+
+
+def _load_cloud():
+    if not CLOUD_FILE.exists():
+        return None
+    with open(CLOUD_FILE, encoding="utf-8") as f:
+        cfg = json.load(f)
+    if not cfg.get("url") or not cfg.get("key"):
+        print(f"PERINGATAN: {CLOUD_FILE.name} harus ada url & key, upload online dimatiin.")
+        return None
+    return cfg
+
+
+CLOUD = _load_cloud()

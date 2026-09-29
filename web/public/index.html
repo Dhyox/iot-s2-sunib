@@ -7,7 +7,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Barlow:wght@400;500;600&family=Barlow+Condensed:wght@500;600&display=swap" rel="stylesheet">
-<script src="{{ url_for('static', filename='chart.umd.min.js') }}"></script>
+<script src="chart.umd.min.js"></script>
 <style>
   :root {
     --paper: #EDF0F2;
@@ -17,7 +17,7 @@
     --line: #CBD3D9;
     --granted: #1E8C4E;
     --denied: #C23A2B;
-    --manual: #2C6FB7;
+    --offline: #8A96A0;
     --display: "Barlow Condensed", "Arial Narrow", sans-serif;
     --body: "Barlow", "Segoe UI", system-ui, sans-serif;
   }
@@ -34,12 +34,13 @@
   .conn { display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 15px; }
   .dot { width: 10px; height: 10px; border-radius: 50%; background: var(--denied); }
   .conn.ok .dot { background: var(--granted); }
+  .conn.off .dot { background: var(--offline); }
 
   main {
     display: grid; grid-template-columns: 340px 1fr; gap: 28px;
     padding: 28px; max-width: 1320px; margin: 0 auto;
   }
-  @media (max-width: 900px) { main { grid-template-columns: 1fr; padding: 18px; } }
+  @media (max-width: 900px) { main { grid-template-columns: 1fr; padding: 18px 16px; } }
 
   .gate {
     background: var(--panel); border: 1px solid var(--line); border-radius: 14px;
@@ -51,16 +52,8 @@
   @media (prefers-reduced-motion: reduce) { #arm { transition: none; } }
   .gate-state { margin: 18px 0 0; font: 600 52px/1 var(--display); }
   .gate.open .gate-state { color: var(--granted); }
-  .gate-since { margin: 6px 0 22px; color: var(--muted); }
-  button {
-    width: 100%; padding: 12px 16px; border: 0; border-radius: 8px;
-    background: var(--ink); color: #fff; font: 500 16px var(--body); cursor: pointer;
-  }
-  button:hover { background: #2E4150; }
-  button:focus-visible { outline: 3px solid var(--manual); outline-offset: 2px; }
-  button:disabled { background: var(--line); color: var(--muted); cursor: not-allowed; }
-  .hint { margin: 10px 0 0; font-size: 14px; color: var(--muted); }
-  .error { color: var(--denied); }
+  .gate.offline .gate-state { color: var(--offline); }
+  .gate-since { margin: 6px 0 0; color: var(--muted); }
 
   .today {
     display: grid; grid-template-columns: repeat(4, 1fr);
@@ -100,7 +93,7 @@
 <body>
 <header>
   <h1>Smart Gate</h1>
-  <div class="conn" id="conn"><span class="dot"></span><span id="connText">Menghubungkan…</span></div>
+  <div class="conn off" id="conn"><span class="dot"></span><span id="connText">Menghubungkan…</span></div>
 </header>
 
 <main>
@@ -117,10 +110,8 @@
       <rect x="30" y="56" width="32" height="94" rx="4" fill="#1C2A36"/>
       <circle cx="46" cy="72" r="5" fill="#EDF0F2"/>
     </svg>
-    <p class="gate-state" id="gateState">Terkunci</p>
+    <p class="gate-state" id="gateState">–</p>
     <p class="gate-since" id="gateSince">Menunggu data…</p>
-    <button id="unlockBtn" type="button">Buka gate</button>
-    <p class="hint" id="unlockHint">Gate menutup otomatis setelah 5 detik.</p>
   </aside>
 
   <section>
@@ -149,24 +140,25 @@
     <div class="table-wrap">
       <table>
         <thead><tr><th>Waktu</th><th>Metode</th><th>Identitas</th><th>Hasil</th><th>Detail</th></tr></thead>
-        <tbody id="logBody"><tr><td colspan="5" class="empty">Belum ada akses tercatat. Tempelkan kartu atau berdiri di depan sensor.</td></tr></tbody>
+        <tbody id="logBody"><tr><td colspan="5" class="empty">Belum ada akses tercatat.</td></tr></tbody>
       </table>
     </div>
   </section>
 </main>
 
 <script>
+// versi online dari laptop/templates/dashboard.html (tanpa tombol buka gate)
 const C = { granted: "#1E8C4E", denied: "#C23A2B", ink: "#1C2A36", muted: "#5B6B78", line: "#CBD3D9" };
 const METHOD_LABEL = { face: "Wajah", rfid: "Kartu RFID", manual: "Dashboard" };
 const $ = id => document.getElementById(id);
 
+const pad = n => String(n).padStart(2, "0");
+const localToday = () => { const d = new Date(); return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`; };
 const fmtDay = iso => new Date(iso + "T00:00:00")
   .toLocaleDateString("id-ID", { day: "numeric", month: "short" });
 const fmtTime = ts => {
   const [d, t] = ts.split(" ");
-  const n = new Date();   // jangan toISOString, itu jam UTC (bukan WIB)
-  const today = `${n.getFullYear()}-${String(n.getMonth() + 1).padStart(2, "0")}-${String(n.getDate()).padStart(2, "0")}`;
-  return d === today ? t : `${fmtDay(d)} ${t.slice(0, 5)}`;
+  return d === localToday() ? t : `${fmtDay(d)} ${t.slice(0, 5)}`;
 };
 
 let charts = null;
@@ -198,7 +190,7 @@ function makeCharts() {
     }),
     hour: new Chart($("hourChart"), {
       type: "bar",
-      data: { labels: [...Array(24).keys()].map(h => String(h).padStart(2, "0")),
+      data: { labels: [...Array(24).keys()].map(h => pad(h)),
               datasets: [{ label: "Akses diterima", data: [], backgroundColor: C.ink }] },
       options: { maintainAspectRatio: false, animation: false,
         scales: { x: { grid: noGrid }, y: { beginAtZero: true, ticks: { precision: 0 }, grid } },
@@ -207,16 +199,28 @@ function makeCharts() {
   };
 }
 
-function renderStatus(s) {
+function setConn(cls, text) {
   const conn = $("conn");
-  conn.classList.toggle("ok", s.esp32_connected);
-  $("connText").textContent = s.esp32_connected ? "ESP32 terhubung" : "ESP32 tidak terhubung";
-  $("unlockBtn").disabled = !s.esp32_connected;
+  conn.classList.remove("ok", "off");
+  if (cls) conn.classList.add(cls);
+  $("connText").textContent = text;
+}
 
-  const open = s.door.state === "open";
+function renderStatus(s) {
+  if (!s.online) {
+    setConn("off", s.last_seen ? `Gate offline · terakhir aktif ${fmtTime(s.last_seen)}` : "Gate offline");
+  } else if (!s.esp32_connected) {
+    setConn("", "Laptop online, ESP32 tidak terhubung");
+  } else {
+    setConn("ok", "Gate online");
+  }
+
+  // kalo offline, status pintu terakhir belum tentu bener
+  const open = s.online && s.door.state === "open";
   $("gate").classList.toggle("open", open);
-  $("gateState").textContent = open ? "Terbuka" : "Terkunci";
-  $("gateSince").textContent = s.door.ts ? `Sejak ${fmtTime(s.door.ts)}` : "Belum ada perubahan status";
+  $("gate").classList.toggle("offline", !s.online);
+  $("gateState").textContent = !s.online ? "Offline" : open ? "Terbuka" : "Terkunci";
+  $("gateSince").textContent = s.door.ts ? `Status pintu terakhir: ${fmtTime(s.door.ts)}` : "Belum ada data pintu";
 
   $("tTotal").textContent = s.today.total;
   $("tGranted").textContent = s.today.granted;
@@ -232,7 +236,6 @@ function renderLogs(rows) {
     const tr = document.createElement("tr");
     const detail = [
       r.score != null ? `skor ${r.score.toFixed(2)}` : null,
-      r.uid ? `UID ${r.uid}` : null,
       r.note
     ].filter(Boolean).join(", ");
     const cells = [
@@ -269,39 +272,31 @@ function renderStats(st) {
   charts.hour.update();
 }
 
+const getJson = url => fetch(url).then(r => { if (!r.ok) throw new Error(r.status); return r.json(); });
+
 async function refresh() {
   try {
-    const [s, logs, st] = await Promise.all([
-      fetch("/api/status").then(r => r.json()),
-      fetch("/api/logs?limit=50").then(r => r.json()),
-      fetch("/api/stats?days=14").then(r => r.json())
-    ]);
+    const [s, logs] = await Promise.all([getJson("/api/status"), getJson("/api/logs?limit=50")]);
     renderStatus(s);
     renderLogs(logs);
-    renderStats(st);
   } catch (e) {
-    $("connText").textContent = "Server dashboard tidak merespons";
-    $("conn").classList.remove("ok");
+    setConn("off", "Server dashboard tidak merespons");
   }
 }
 
-$("unlockBtn").addEventListener("click", async () => {
-  const btn = $("unlockBtn"), hint = $("unlockHint");
-  btn.disabled = true;
-  const res = await fetch("/api/unlock", { method: "POST" }).then(r => r.json()).catch(() => ({ ok: false }));
-  hint.classList.toggle("error", !res.ok);
-  hint.textContent = res.ok ? "Gate dibuka. Menutup otomatis setelah 5 detik."
-                            : (res.error || "Gagal membuka gate.") + " Cek kabel USB ESP32.";
-  refresh();
-});
+async function refreshStats() {
+  try { renderStats(await getJson("/api/stats?days=14")); } catch (e) {}
+}
 
 charts = makeCharts();
 if (!charts) {
   document.querySelectorAll(".chart-box").forEach(b =>
-    b.innerHTML = '<p class="empty">File static/chart.umd.min.js tidak ditemukan.</p>');
+    b.innerHTML = '<p class="empty">File chart.umd.min.js tidak ditemukan.</p>');
 }
 refresh();
-setInterval(refresh, 2000);
+refreshStats();
+setInterval(refresh, 4000);        // status + log tiap 4 detik
+setInterval(refreshStats, 30000);  // grafik ga perlu secepet itu
 </script>
 </body>
 </html>
