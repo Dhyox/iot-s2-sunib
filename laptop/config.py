@@ -13,13 +13,15 @@ BAUD_RATE = 115200
 CAMERA_INDEX = 0          # 0 = webcam laptop, 1 = webcam external
 SCAN_WINDOW_SEC = 5.0     # jangan lebih dari SESSION_MS di ESP32 (12 detik)
 
-# face recognition
-HAAR_CASCADE = BASE_DIR / "models" / "haarcascade_frontalface_default.xml"
-FACE_DATA_DIR = BASE_DIR / "data"
-LBPH_MODEL_FILE = BASE_DIR / "trainer.yml"
-LBPH_LABELS_FILE = BASE_DIR / "labels.json"
-# makin kecil makin ketat. turunin kalo orang lain ikut kebuka
-LBPH_THRESHOLD = 70
+# face recognition (insightface / ArcFace)
+# model kedownload otomatis ke models/ pas pertama kali jalan
+FACE_MODEL = "buffalo_l"  # ganti "buffalo_s" kalo laptopnya kelemotan
+EMBEDDINGS_FILE = BASE_DIR / "embeddings.pkl"
+# skor = cosine similarity (0-1), makin tinggi makin mirip
+# naikin kalo orang lain ikut kebuka, turunin kalo muka sendiri sering ditolak
+# nilai pastinya cek pake evaluate.py
+MATCH_THRESHOLD = 0.40
+MATCH_MARGIN = 0.08       # skor harus beda segini sama orang ke-2, biar ga ketuker
 
 # kartu RFID ada di rfid_cards.json (ga di-commit soalnya repo publik)
 # copy dari rfid_cards.example.json terus isi UID kartunya

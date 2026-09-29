@@ -1,7 +1,7 @@
 # Smart Gate: Face Recognition + RFID
 
 ESP32 DevKit V1 mengendalikan gate (RFID RC522, HC-SR04, servo, buzzer, LED merah & hijau).
-Laptop menjalankan face recognition lewat webcam (Haar cascade + LBPH), mencatat log
+Laptop menjalankan face recognition lewat webcam (InsightFace / ArcFace), mencatat log
 ke SQLite, dan menyajikan dashboard HTTP. Keduanya terhubung lewat kabel USB (serial).
 
 ```
@@ -10,34 +10,40 @@ iot-s2-sunib/
 └── laptop/
     ├── config.py               port COM, kamera, threshold
     ├── rfid_cards.example.json contoh daftar kartu RFID (salin ke rfid_cards.json)
-    ├── face_engine.py          deteksi (Haar cascade) + pengenalan wajah (LBPH)
-    ├── enroll.py               ambil foto wajah + training model
+    ├── face_engine.py          deteksi + pengenalan wajah (InsightFace / ArcFace)
+    ├── enroll.py               daftarkan wajah
     ├── evaluate.py             uji akurasi & kalibrasi threshold
     ├── database.py             SQLite: log akses & status pintu
     ├── main.py                 bridge serial + server dashboard
-    ├── models/haarcascade_frontalface_default.xml
     ├── templates/dashboard.html
     └── static/chart.umd.min.js Chart.js lokal (dashboard jalan tanpa internet)
 ```
 
 File yang dibuat saat dipakai (tidak di-commit): `rfid_cards.json` (kartu RFID),
-`data/<nama>/*.jpg` (foto wajah), `trainer.yml` (model LBPH), `labels.json` (id -> nama),
+`models/` (model InsightFace, diunduh otomatis), `embeddings.pkl` (data wajah),
 `gate.db` (log), `eval_data/` dan `eval_report.png` (evaluasi).
 
 ## Cara kerja
 
 1. Tidak ada orang → semua LED mati.
-2. Orang mendekat ≤ 30 cm (3 pembacaan berturut-turut) → **LED merah nyala**, sesi 12 detik dimulai.
+2. Orang mendekat ≤ 60 cm (3 pembacaan berturut-turut) → **LED merah nyala**, sesi 12 detik dimulai.
 3. Selama sesi, **wajah dan kartu aktif bersamaan**. Mana yang berhasil duluan, gate terbuka.
    - Wajah: laptop menilai hingga 5 frame berisi wajah, gate dibuka kalau minimal 3 frame
-     sepakat pada orang yang sama (jarak LBPH < `LBPH_THRESHOLD`).
+     sepakat pada orang yang sama (skor ≥ `MATCH_THRESHOLD` dan cukup beda dari orang ke-2).
      Gagal → **merah kedip 3x** + bunyi 3x, lalu masih ada 2 detik untuk tempel kartu.
-   - Kartu: UID dicek laptop ke `RFID_CARDS`. Kalau laptop tidak menjawab dalam 1,5 detik,
+   - Kartu: UID dicek laptop ke `rfid_cards.json`. Kalau laptop tidak menjawab dalam 1,5 detik,
      ESP32 memakai daftar cadangan `LOCAL_CARDS`. Kartu salah → **merah kedip 3x** + bip pendek, sesi lanjut.
-   - Sesi habis tanpa berhasil → bip panjang, LED mati, jeda 1 detik. Kalau orangnya masih
+   - Sesi habis tanpa berhasil → bip panjang, LED mati, jeda 2 detik. Kalau orangnya masih
      di depan sensor, sesi baru langsung mulai lagi.
-4. Akses diterima → **LED hijau nyala**, servo terbuka 5 detik, lalu tertutup (LED mati) + jeda 1 detik.
+4. Akses diterima → **LED hijau nyala**, servo terbuka 5 detik, lalu tertutup (LED mati) + jeda 2 detik.
    Orang harus lewat/menjauh dulu sebelum sesi baru.
+
+### Face recognition
+
+ArcFace sudah di-train oleh pembuatnya dengan jutaan wajah, jadi tidak ada training di sini.
+Setiap wajah diubah jadi *embedding* (512 angka). Enroll = menyimpan ~20 embedding per orang
+dari pose yang berbeda-beda. Saat scan, embedding wajah dibandingkan (cosine similarity)
+dengan semua orang terdaftar. Skor tiap orang = rata-rata 3 sampel paling mirip.
 
 ## Wiring
 
@@ -63,11 +69,11 @@ File yang dibuat saat dipakai (tidak di-commit): `rfid_cards.json` (kartu RFID),
 
 ```bash
 cd laptop
-pip uninstall opencv-python          # bentrok dengan versi contrib (cv2.face hilang)
+pip uninstall -y opencv-contrib-python   # sisa versi LBPH, bentrok sama opencv-python
 pip install -r requirements.txt
-python -m serial.tools.list_ports    # cari port ESP32, isi SERIAL_PORT di config.py
+python -m serial.tools.list_ports        # cari port ESP32, isi SERIAL_PORT di config.py
 copy rfid_cards.example.json rfid_cards.json   # lalu isi UID kartu asli (Linux/macOS: cp)
-python enroll.py Carlson             # ambil 100 foto wajah + training otomatis
+python enroll.py Carlson                 # pertama kali jalan: unduh model (~300 MB)
 python enroll.py Vincent
 python main.py
 ```
@@ -80,22 +86,25 @@ Salin UID-nya ke `rfid_cards.json`, lalu restart `main.py`.
 ### Data yang tidak di-commit
 
 Repo ini publik, jadi data berikut hanya disimpan di laptop gate (sudah ada di `.gitignore`):
-`rfid_cards.json` (UID kartu asli), `data/` (foto wajah), `trainer.yml` + `labels.json`
-(model wajah), `gate.db` (log akses), `eval_data/`. Setiap laptop harus enroll wajah
-dan mengisi `rfid_cards.json` sendiri.
+`rfid_cards.json` (UID kartu asli), `embeddings.pkl` (data wajah), `gate.db` (log akses),
+`models/`, `eval_data/`. Setiap laptop harus enroll wajah dan mengisi `rfid_cards.json` sendiri.
 
 ### Mengelola wajah
 
 ```bash
-python enroll.py Carlson             # GANTI foto lama Carlson dengan 100 foto baru
-python enroll.py Carlson --append    # tambah foto tanpa menghapus yang lama
-python enroll.py Carlson --samples 150
-python enroll.py --list              # daftar orang & jumlah foto
-python enroll.py --remove Carlson    # hapus orang lalu training ulang
-python enroll.py --train             # training ulang dari folder data/
+python enroll.py Carlson             # GANTI data lama Carlson, 20 sampel
+python enroll.py Carlson --append    # tambah sampel tanpa menghapus yang lama
+python enroll.py Carlson --samples 30
+python enroll.py --list              # daftar orang + kemiripan dengan orang lain
+python enroll.py --remove Carlson
 ```
 
-Tekan Q atau Enter untuk membatalkan pengambilan foto (data lama tidak berubah).
+Ikuti instruksi di layar (lihat lurus, toleh sedikit, angkat dagu, ganti ekspresi).
+Yang penting **variasi pose**, bukan jumlah foto. Enroll di lokasi gate, dengan webcam,
+jarak, dan cahaya yang sama seperti saat dipakai. Tekan Q atau Enter untuk batal.
+
+`--list` menampilkan seberapa mirip tiap orang dengan orang lain. Kalau muncul
+`RAWAN KETUKER`, enroll ulang orang tersebut atau naikkan `MATCH_THRESHOLD`.
 
 ### Evaluasi akurasi
 
@@ -103,9 +112,9 @@ Kumpulkan data uji di **sesi berbeda** dari enroll (jam/hari lain), termasuk ora
 **tidak terdaftar** untuk menguji false accept:
 
 ```bash
-python evaluate.py collect Carlson   # orang terdaftar, 40 foto
+python evaluate.py collect Carlson   # orang terdaftar, 40 frame
 python evaluate.py collect tamu1     # orang asing
-python evaluate.py report            # FAR, FRR, EER, saran threshold + eval_report.png
+python evaluate.py report            # FAR, FRR, EER, saran threshold & margin + eval_report.png
 ```
 
 ## Protokol serial (115200 baud, satu baris per pesan)
@@ -113,7 +122,7 @@ python evaluate.py report            # FAR, FRR, EER, saran threshold + eval_rep
 | Arah | Pesan | Arti |
 |---|---|---|
 | ESP32 → laptop | `READY` | ESP32 baru menyala |
-| ESP32 → laptop | `SCAN` | ada orang ≤ 30 cm, mulai face recognition |
+| ESP32 → laptop | `SCAN` | ada orang di depan sensor, mulai face recognition |
 | ESP32 → laptop | `CANCEL` | sesi selesai (gate terbuka / waktu habis), hentikan scan |
 | ESP32 → laptop | `RFID,<uid>` | kartu ditempel, minta verifikasi |
 | ESP32 → laptop | `DOOR,OPEN` / `DOOR,CLOSED` | status gate berubah |
@@ -121,6 +130,9 @@ python evaluate.py report            # FAR, FRR, EER, saran threshold + eval_rep
 | laptop → ESP32 | `FACE,OK,<nama>` / `FACE,FAIL` | hasil face recognition |
 | laptop → ESP32 | `RFID,OK,<nama>` / `RFID,FAIL` | hasil verifikasi kartu |
 | laptop → ESP32 | `OPEN` | buka manual dari dashboard |
+
+Pesan lain yang diterima laptop (misalnya data serial yang terpotong) diabaikan dan
+ditampilkan sebagai `<- ?? ...`.
 
 ## API dashboard
 
@@ -134,10 +146,15 @@ python evaluate.py report            # FAR, FRR, EER, saran threshold + eval_rep
 ## Troubleshooting
 
 - **`could not open port` / `Access is denied`**: Serial Monitor Arduino masih terbuka, atau `SERIAL_PORT` salah.
-- **`cv2.face tidak ada`**: `pip uninstall opencv-python opencv-contrib-python`, lalu `pip install opencv-contrib-python`.
-- **Wajah sering tidak dikenali**: enroll ulang di lokasi gate dengan pencahayaan yang sama,
-  atau tambah foto (`python enroll.py Carlson --append`). Bisa juga naikkan `LBPH_THRESHOLD` sedikit.
-- **Orang lain/asing dikenali sebagai kamu**: turunkan `LBPH_THRESHOLD` (misal 60).
+- **`pip install insightface` gagal di Windows** (`Microsoft Visual C++ 14.0 or greater is required`):
+  install "Microsoft C++ Build Tools" (centang *Desktop development with C++*), lalu ulangi.
+- **`cv2.imshow ... The function is not implemented`**: ada `opencv-python-headless` yang ikut
+  ter-install. Jalankan `pip uninstall -y opencv-python-headless opencv-contrib-python` lalu
+  `pip install --force-reinstall opencv-python`.
+- **Scan wajah terasa lambat**: ganti `FACE_MODEL = "buffalo_s"` di `config.py` (lebih ringan), lalu enroll ulang.
+- **Wajah sendiri sering ditolak**: enroll ulang di lokasi gate, atau tambah sampel
+  (`python enroll.py Carlson --append`). Bisa juga turunkan `MATCH_THRESHOLD` sedikit.
+- **Orang lain dikenali sebagai kamu**: naikkan `MATCH_THRESHOLD` / `MATCH_MARGIN`.
   Gunakan `python evaluate.py report` untuk memilih nilai yang tepat.
 - **Face recog terpicu terus / tidak pernah**: atur `TRIGGER_DISTANCE_CM` di `.ino`, cek voltage divider Echo.
 - **ESP32 reset saat servo bergerak** (`Brownout detector was triggered`): pasang kapasitor di rail 5V, atau pindah ke supply 5V eksternal.
@@ -145,8 +162,7 @@ python evaluate.py report            # FAR, FRR, EER, saran threshold + eval_rep
 ## Limitasi (untuk laporan)
 
 - Belum ada liveness detection, jadi foto wajah di HP bisa menipu sistem.
-- LBPH sensitif terhadap perubahan cahaya dan sudut wajah. Enroll sebaiknya dilakukan di lokasi gate.
-- LBPH selalu mengembalikan orang terdaftar yang paling mirip; penolakan orang asing hanya
-  bergantung pada `LBPH_THRESHOLD`, jadi threshold perlu dikalibrasi dengan `evaluate.py`.
+- Akurasi tetap bergantung pada kondisi enroll (cahaya, jarak, pose). Enroll sebaiknya di lokasi gate.
 - Endpoint `/api/unlock` tidak memakai autentikasi. Siapa pun di jaringan yang sama bisa membuka gate.
 - Face recognition bergantung pada laptop. Kalau laptop mati, hanya kartu di `LOCAL_CARDS` yang bisa membuka gate.
+- Model InsightFace (buffalo_l / buffalo_s) hanya untuk penggunaan non-komersial.

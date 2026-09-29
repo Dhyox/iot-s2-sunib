@@ -1,6 +1,7 @@
 # program utama: serial ke ESP32 + dashboard flask (localhost:5000)
 # NOTE: tutup serial monitor arduino dulu, kalo ga port COM-nya kepake
 import logging
+import re
 import threading
 import time
 from collections import Counter, defaultdict
@@ -18,6 +19,10 @@ from face_engine import FaceEngine, open_camera
 VOTE_FRAMES = getattr(config, "VOTE_FRAMES", 5)
 VOTES_NEEDED = getattr(config, "VOTES_NEEDED", 3)
 FRAME_INTERVAL_SEC = getattr(config, "FRAME_INTERVAL_SEC", 0.15)
+
+# pesan dari ESP32 yg valid, selain ini dianggep data rusak
+KNOWN_MSGS = {"READY", "SCAN", "CANCEL", "DOOR,OPEN", "DOOR,CLOSED"}
+RFID_MSG = re.compile(r"RFID,[0-9A-F]{4,20}")
 
 
 class GateBridge:
@@ -40,6 +45,7 @@ class GateBridge:
         s.dtr = False   # kalo ga di-set, ESP32 ke-reset tiap port dibuka
         s.rts = False
         s.open()
+        s.reset_input_buffer()   # buang sisa data lama yg numpuk sebelum main.py jalan
         return s
 
     def run(self):
@@ -88,7 +94,11 @@ class GateBridge:
 
     def _handle(self, line):
         if line.startswith("#"):
-            print(f"[ESP32] {line[1:].strip()}")
+            print(f"[ESP32] {line[1:].strip()[:80]}")
+            return
+        if line not in KNOWN_MSGS and not RFID_MSG.fullmatch(line):
+            # data kepotong/rusak (kayak CANCANCAN...), jangan diproses
+            print(f"<- ?? {line[:40]}... (diabaikan)")
             return
         print(f"<- {line}")
 
@@ -133,6 +143,7 @@ class GateBridge:
         deadline = time.time() + SCAN_WINDOW_SEC
         votes, vote_scores = Counter(), defaultdict(list)
         outcomes = Counter()
+        skipped = Counter()
         judged, last_judged = 0, 0.0
         closest_name, closest_score = None, None
 
@@ -147,11 +158,15 @@ class GateBridge:
             r = self.engine.identify(frame)
             if r.status == "no_face":
                 continue
+            if r.status == "low_quality":   # ada muka tapi kejauhan/ga jelas, skip aja
+                skipped[r.reason.split(" (")[0]] += 1
+                continue
 
             last_judged = time.time()
             judged += 1
             outcomes[r.status] += 1
-            print(f"  frame {judged}: {r.status:<7} {r.name} {r.score:.1f}")
+            second = f", ke-2 {r.second_name} {r.second_score:.2f}" if r.second_name else ""
+            print(f"  frame {judged}: {r.status:<9} {r.name} {r.score:.2f}{second}")
             if r.name and (closest_score is None or r.score > closest_score):
                 closest_name, closest_score = r.name, r.score
 
@@ -171,13 +186,16 @@ class GateBridge:
         if winner and n >= VOTES_NEEDED:
             score = sum(vote_scores[winner]) / n
             self.send(f"FACE,OK,{winner}")
-            db.log_access("face", "granted", identity=winner, score=round(score, 1),
+            db.log_access("face", "granted", identity=winner, score=round(score, 3),
                           note=f"{n}/{judged} frame sepakat")
             return
 
         self.send("FACE,FAIL")
         if judged == 0:
-            note = "tidak ada wajah terdeteksi"
+            reason = skipped.most_common(1)[0][0] if skipped else "tidak ada wajah terdeteksi"
+            note = f"ga ada frame yg layak: {reason}"
+        elif outcomes["ambiguous"] and outcomes["ambiguous"] >= outcomes["unknown"]:
+            note = "ragu: skornya mirip beberapa orang"
         elif outcomes["unknown"]:
             note = "wajah tidak dikenal"
         else:
@@ -185,7 +203,7 @@ class GateBridge:
         if closest_name:
             note += f" (terdekat {closest_name}, {votes[closest_name]}/{judged} frame)"
         db.log_access("face", "denied",
-                      score=round(closest_score, 1) if closest_score is not None else None,
+                      score=round(closest_score, 3) if closest_score is not None else None,
                       note=note)
 
     def manual_open(self):
