@@ -19,14 +19,14 @@
 
 // setting
 const bool BUZZER_PASSIVE      = false;  // true kalo buzzernya pasif
-const int  TRIGGER_DISTANCE_CM = 30;
+const int  TRIGGER_DISTANCE_CM = 60;
 const int  NEAR_READINGS_NEEDED = 3;     // biar ga ke-trigger noise sensor
 const int  SERVO_CLOSED_DEG    = 0;
 const int  SERVO_OPEN_DEG      = 90;
 const unsigned long SESSION_MS        = 12000;
 const unsigned long RFID_TIMEOUT_MS   = 1500;  // nunggu jawaban laptop
 const unsigned long DOOR_OPEN_MS      = 5000;
-const unsigned long COOLDOWN_MS       = 4000;
+const unsigned long COOLDOWN_MS       = 2000;
 const unsigned long DISTANCE_EVERY_MS = 100;
 
 // cadangan kalo laptop mati / ga jawab
